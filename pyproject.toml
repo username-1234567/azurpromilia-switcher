@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azurpromilia-switcher"
+version = "0.1.0"
+description = "Azur Promilia CN/global client switcher, sharing identical resources via NTFS hard links"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+crypto = ["pycryptodome>=3.20"]
+
+[project.scripts]
+azp = "azp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["azp*"]

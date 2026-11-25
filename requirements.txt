@@ -1,0 +1,3 @@
+# 可选依赖：装了就用 pycryptodome，不装则自动回退到系统 openssl。
+# 两者都没有时才需要安装（quickstart.cmd 会自动尝试）。
+pycryptodome>=3.20
