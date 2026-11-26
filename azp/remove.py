@@ -74,8 +74,10 @@ def check_target(target: Path, base: Path | None, force: bool) -> str:
         return f"目录不存在：{target}"
     if not target.is_dir():
         return f"不是目录：{target}"
-    if len(target.parts) < 3:
-        return f"路径太浅，拒绝删除：{target}"
+    if len(target.parts) < 2:
+        return f"这是盘符根，拒绝删除：{target}"
+    if len(target.parts) < 3 and not force:
+        return f"路径太浅，拒绝删除：{target}（确实要删请加 --force）"
 
     root = target.resolve()
     if base is not None:
