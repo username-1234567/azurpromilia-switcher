@@ -7,7 +7,7 @@
 用本工具   79.01 + 29.19 = 108.20 GiB
 ```
 
-仓库不含游戏文件和渠道密钥；清单、资源从官方 CDN 现拉，密钥从本机 `app_config.dat` 解出。
+仓库不含游戏文件和渠道密钥；清单、资源从官方 CDN 拉取，密钥从本机 `app_config.dat` 解出。
 
 ## 原理
 
@@ -48,7 +48,9 @@ python -m azp finalize --target "$TGT" --manifest out/global/manifest.json \
 python -m azp verify --manifest out/global/manifest.json --dir "$TGT" --sample 20
 ```
 
-目标区目录名不能随便起，启动器按 `gameFolderName` 找，国际服是 `AzurPromilia_TC_game`。最后启动目标区启动器做一次校验修复。
+目标区目录名不能随便起名，启动器按 `gameFolderName` 找，国际服是 `AzurPromilia_TC_game`。最后启动目标区启动器做一次校验修复。
+
+交给你的agent执行：使用[`AGENT.md`](agent.md)
 
 ## 命令
 
@@ -92,10 +94,11 @@ python -m azp remove --target "D:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
 - `plan --local` 按文件名 + 大小匹配本地额外文件，命中后验 MD5；按内容全盘匹配还没做，估计还能多省 1 GiB
 - 只支持 Windows；清单接口偶尔很慢（15 MB 十几分钟），CDN 侧问题
 - 两个区的客户端不要同时开，ACE 一般只允许单实例
+- 别把自己的 `app_config.dat`、token 贴到 issue；`export` 出来的文件是游戏资源，只在自己机器之间搬
 - 实测：装完国际服并跑完热更，链接断开 0 条，共用文件被改写 0 个，源区 42,734 个文件无变动
 
 ## 免责
 
-工具只读本机启动器配置调官方接口，不含账号凭据。改本地文件可能违反用户协议，风险自负。
+工具只读本机启动器配置调官方接口，不含游戏资源、渠道密钥和账号凭据。改本地文件可能违反游戏用户协议，账号与数据风险自负。非官方项目，与开发商、发行商无关。
 
-License: MIT
+License: MIT，见 [`LICENSE`](LICENSE)；许可范围、风险与第三方依赖见 [`NOTICE`](NOTICE)。
