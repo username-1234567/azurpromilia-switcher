@@ -8,7 +8,19 @@ import random
 import sys
 from pathlib import Path
 
-from . import __version__, channels, detect, export, fetch, indexfile, link, manifest, plan
+from . import (
+    __version__,
+    channels,
+    detect,
+    export,
+    fetch,
+    indexfile,
+    link,
+    manifest,
+    plan,
+    preflight,
+    remove,
+)
 from .api import Api
 
 DEFAULT_OUT = Path("out")
@@ -176,6 +188,35 @@ def cmd_finalize(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    base = Path(args.base) if args.base else None
+    target = Path(args.target) if args.target else None
+    need = int(args.need * 2**30) if args.need else 0
+    manifest_data = None
+    if args.manifest:
+        manifest_data = json.loads(Path(args.manifest).read_text("utf-8"))
+    if not need and args.plan:
+        rows = plan.read_csv(Path(args.plan))
+        need = preflight.pending_bytes(rows, target) if target else sum(
+            r["size"] for r in rows if r["action"] == "download"
+        )
+    if base is None and target is None:
+        print("只检查了运行环境。加 --base / --target 可以连磁盘一起查。")
+    ok, items = preflight.run(base, target, need_bytes=need, manifest=manifest_data)
+    print(preflight.render(items))
+    return 0 if ok else 2
+
+
+def cmd_remove(args) -> int:
+    return remove.run(
+        Path(args.target),
+        base=Path(args.base) if args.base else None,
+        yes=args.yes,
+        dry=args.dry_run,
+        force=args.force,
+    )
+
+
 def cmd_quickstart(args) -> int:
     """交互式向导：一条命令走完全流程。"""
     print("蓝色星原：旅谣 国服/国际服切换")
@@ -267,9 +308,16 @@ def cmd_quickstart(args) -> int:
     plan.write_csv(rows, csv_path)
     print(f"  计划表 {csv_path}")
 
-    drive_ok = str(base_dir).split(":")[0].lower() == str(target_dir).split(":")[0].lower()
-    if not drive_ok:
-        print("\n两个目录不在同一分区，硬链接不能跨卷，先挪到一起。")
+    print("\n环境检查")
+    ok, items = preflight.run(
+        base_dir,
+        target_dir,
+        need_bytes=preflight.pending_bytes(rows, target_dir),
+        manifest=target_man,
+    )
+    print(preflight.render(items))
+    if not ok:
+        print("\n有致命项，处理好再跑一次。")
         return 1
 
     if not _ask_yes("\n开始建硬链接并下载", default=False):
@@ -344,6 +392,22 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("detect", help="列出本机找到的启动器与游戏目录")
     d.add_argument("--root", action="append", help="额外搜索的安装根目录，可重复")
     d.set_defaults(func=cmd_detect)
+
+    ck = sub.add_parser("check", help="检查环境、文件系统与硬链接能力")
+    ck.add_argument("--base", help="源区游戏目录")
+    ck.add_argument("--target", help="目标区游戏目录，可以还不存在")
+    ck.add_argument("--manifest", help="目标区清单，用来算最长路径")
+    ck.add_argument("--plan", help="计划表，用其中的下载量作为空间需求")
+    ck.add_argument("--need", type=float, help="需要多少 GiB，优先于 --plan")
+    ck.set_defaults(func=cmd_check)
+
+    rm = sub.add_parser("remove", help="删除一个区的客户端，不影响另一区")
+    rm.add_argument("--target", required=True, help="要删的客户端目录")
+    rm.add_argument("--base", help="另一区目录，用来防止误删")
+    rm.add_argument("--dry-run", action="store_true", help="只统计，不删")
+    rm.add_argument("--yes", action="store_true", help="跳过确认")
+    rm.add_argument("--force", action="store_true", help="目录不像客户端时也允许删")
+    rm.set_defaults(func=cmd_remove)
 
     q = sub.add_parser("quickstart", help="交互式向导：一条命令走完全流程")
     q.add_argument("--out", default=str(DEFAULT_OUT))

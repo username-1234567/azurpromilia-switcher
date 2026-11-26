@@ -77,6 +77,8 @@ python -m azp verify --manifest out/global/manifest.json \
 |---|---|
 | `quickstart` | 交互向导，从抓清单到校验一次走完 |
 | `detect` | 从注册表和盘符扫描启动器、游戏目录、渠道代号 |
+| `check` | 环境自检：Python、AES 后端、卷类型、是否同卷、硬链接实测、可用空间、长路径 |
+| `remove` | 删掉一个区的客户端目录，只减硬链接引用，不动另一区 |
 | `manifests` | 抓各区清单到 `out/<区服>/` |
 | `plan` | 比对两份清单，输出 link / link_local / download 计划表 |
 | `link` | 按计划建硬链接，`--dry-run` 可预演 |
@@ -87,6 +89,32 @@ python -m azp verify --manifest out/global/manifest.json \
 | `verify` | 检查缺失、大小不符、抽样 MD5 |
 
 区服代号由 appId 和渠道号决定：`354/C000` 是 cn，`354/C001` 是 bili，`434/C500` 是 global。
+
+## 环境自检
+
+不放心可以先查一遍，不碰任何文件：
+
+```bash
+python -m azp check --base "C:/AzurPromilia/AzurPromilia_Game" \
+    --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
+    --manifest out/global/manifest.json --plan out/plan_cn_to_global.csv
+```
+
+检查项是卷类型（NTFS/ReFS）、源与目标是否同一卷、在该卷上真建一对硬链接试试、可用空间够不够、
+清单里最长的路径会不会撞上 255 字符限制。有致命项时退出码是 2。`quickstart` 在动手前会自动跑这套。
+
+## 卸载一个区
+
+```bash
+python -m azp remove --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
+    --base "C:/AzurPromilia/AzurPromilia_Game" --dry-run
+```
+
+`--dry-run` 只统计，输出把文件分成三类：与源区共用的（删了不释放、源区照常）、与别处共用的
+（暂存或备份目录还拿着同一份数据，得一起删才释放）、本区独占的（删了才真正释放）。确认无误去掉
+`--dry-run`，加 `--yes` 跳过确认。
+
+删之前关掉启动器和游戏，占用中的文件删不掉。`remove` 只删客户端目录，启动器还留在原处。
 
 ## 注意
 
