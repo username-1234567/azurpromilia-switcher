@@ -6,6 +6,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .journal import Entry
+
 
 class LinkStats:
     def __init__(self) -> None:
@@ -15,7 +17,8 @@ class LinkStats:
         self.bytes = 0
 
 
-def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool) -> None:
+def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool,
+              journal: Entry | None = None) -> None:
     try:
         if dst.exists():
             if dst.stat().st_size == size:
@@ -37,6 +40,8 @@ def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool) -> N
         os.link(src, dst)
         stats.created += 1
         stats.bytes += size
+        if journal is not None:
+            journal.add_created(dst, size)
     except OSError as exc:
         hint = ""
         if getattr(exc, "winerror", None) == 17:
@@ -45,7 +50,8 @@ def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool) -> N
 
 
 def run(rows: list[dict], base_dir: Path, target_dir: Path,
-        local_dir: Path | None = None, workers: int = 8, dry: bool = False) -> LinkStats:
+        local_dir: Path | None = None, workers: int = 8, dry: bool = False,
+        journal: Entry | None = None) -> LinkStats:
     jobs: list[tuple[Path, Path, int]] = []
     for row in rows:
         if row["action"] == "link":
@@ -63,7 +69,7 @@ def run(rows: list[dict], base_dir: Path, target_dir: Path,
 
     print(f"  {'[试运行] ' if dry else ''}建立 {len(jobs)} 个硬链接")
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(lambda j: _link_one(j[0], j[1], j[2], stats, dry), jobs))
+        list(pool.map(lambda j: _link_one(j[0], j[1], j[2], stats, dry, journal), jobs))
 
     print(f"  完成：新建 {stats.created} 个 / {stats.bytes / 2**30:.2f} GiB，"
           f"已存在跳过 {stats.skipped} 个，失败 {len(stats.failed)} 个")

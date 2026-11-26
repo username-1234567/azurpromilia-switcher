@@ -78,6 +78,8 @@ python -m azp verify --manifest out/global/manifest.json \
 | `quickstart` | 交互向导，从抓清单到校验一次走完 |
 | `detect` | 从注册表和盘符扫描启动器、游戏目录、渠道代号 |
 | `check` | 环境自检：Python、AES 后端、卷类型、是否同卷、硬链接实测、可用空间、长路径 |
+| `repair` | 按清单只修坏掉的文件：能重建链接就别下载 |
+| `rollback` | 按 `out/journal/` 账本撤销上一次写入 |
 | `remove` | 删掉一个区的客户端目录，只减硬链接引用，不动另一区 |
 | `manifests` | 抓各区清单到 `out/<区服>/` |
 | `plan` | 比对两份清单，输出 link / link_local / download 计划表 |
@@ -115,6 +117,38 @@ python -m azp remove --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
 `--dry-run`，加 `--yes` 跳过确认。
 
 删之前关掉启动器和游戏，占用中的文件删不掉。`remove` 只删客户端目录，启动器还留在原处。
+
+加 `--trash` 会整个目录移进回收站，删错了能从回收站还原。
+
+## 改坏了怎么退
+
+按代价从低到高，有三条路。
+
+**一、撤销上一次写入。** `link`、`fetch`、`finalize`、`quickstart` 动手时都会在 `out/journal/` 记一笔：
+新建了哪些文件、覆盖前备份了哪些（备份放 `out/backup/`）。
+
+```bash
+python -m azp rollback --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" --dry-run
+python -m azp rollback --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" --yes
+```
+
+只删本次新建的文件、把覆盖前的 `_index` 放回去，源区不动。操作之后又被别的程序改过的文件会保留，不会误删。
+
+**二、只修坏的那几个。** 清单里每个文件都有大小、MD5 和下载地址：
+
+```bash
+python -m azp repair --target "C:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
+    --manifest out/global/manifest.json \
+    --base "C:/AzurPromilia/AzurPromilia_Game" --full
+```
+
+源区有同 MD5 的文件就重建硬链接，零下载；没有就只重下这一个。`--full` 全量校验 MD5，95 GiB 几分钟；
+不加只比大小，另用 `--sample N` 抽样验 MD5。
+
+**三、删错了。** `remove --trash` 把整目录移进回收站，能还原。
+
+本地真正救不回来的只有一种情况：独占文件被删、没有网络、也没有别的副本。共用文件不存在这个问题——
+它就等于源区那一份，重建链接即可。
 
 ## 注意
 

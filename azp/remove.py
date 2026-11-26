@@ -129,8 +129,45 @@ def _confirm(target: Path) -> bool:
     return answer.startswith("y")
 
 
+def _to_recycle_bin(root: Path) -> tuple[bool, str]:
+    """整目录移入回收站。一次调用，可还原。"""
+    if os.name != "nt":
+        return False, "只有 Windows 有回收站"
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("wFunc", wintypes.UINT),
+            ("pFrom", wintypes.LPCWSTR),
+            ("pTo", wintypes.LPCWSTR),
+            ("fFlags", ctypes.c_uint16),
+            ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", ctypes.c_void_p),
+            ("lpszProgressTitle", wintypes.LPCWSTR),
+        ]
+
+    FO_DELETE = 3
+    FOF_SILENT = 0x0004
+    FOF_NOCONFIRMATION = 0x0010
+    FOF_ALLOWUNDO = 0x0040
+    FOF_NOERRORUI = 0x0400
+
+    op = SHFILEOPSTRUCTW()
+    op.wFunc = FO_DELETE
+    op.pFrom = str(root) + "\0"  # 双 null 结尾
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+    result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if result != 0:
+        return False, f"SHFileOperation 返回 {result}"
+    if op.fAnyOperationsAborted:
+        return False, "操作被中止"
+    return True, ""
+
+
 def run(target: Path, base: Path | None = None, yes: bool = False,
-        dry: bool = False, force: bool = False) -> int:
+        dry: bool = False, force: bool = False, trash: bool = False) -> int:
     reason = check_target(target, base, force)
     if reason:
         print(reason)
@@ -154,11 +191,18 @@ def run(target: Path, base: Path | None = None, yes: bool = False,
         print(f"  源区 {base} 不会被改动")
 
     if dry:
-        print("试运行结束，未删除任何文件。")
+        print(f"试运行结束，未删除任何文件（实际会{'移入回收站' if trash else '直接删除'}）。")
         return 0
     if not yes and not _confirm(target):
         print("已取消。")
         return 1
+
+    if trash:
+        ok, why = _to_recycle_bin(target)
+        if ok:
+            print(f"已移入回收站，{target} 不在原位了；反悔的话从回收站还原")
+            return 0
+        print(f"放进回收站失败（{why}），改用直接删除")
 
     errors: list[str] = []
     _delete_tree(target, errors)

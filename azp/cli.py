@@ -6,6 +6,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 from . import (
@@ -15,11 +16,13 @@ from . import (
     export,
     fetch,
     indexfile,
+    journal,
     link,
     manifest,
     plan,
     preflight,
     remove,
+    repair,
 )
 from .api import Api
 
@@ -117,23 +120,36 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def _save_journal(entry: journal.Entry) -> None:
+    path = entry.save()
+    if path is not None:
+        print(f"  账本 {path}（改坏了用 azp rollback 撤销）")
+
+
 def cmd_fetch(args) -> int:
     rows = plan.read_csv(Path(args.plan))
     target = Path(args.target)
-    stats = fetch.run(rows, target, workers=args.workers)
+    entry = journal.Entry("fetch", target)
+    stats = fetch.run(rows, target, workers=args.workers, journal=entry)
+    _save_journal(entry)
     return 0 if not stats.failed else 2
 
 
 def cmd_link(args) -> int:
     rows = plan.read_csv(Path(args.plan))
+    target = Path(args.target)
+    entry = journal.Entry("link", target)
     stats = link.run(
         rows,
         base_dir=Path(args.base),
-        target_dir=Path(args.target),
+        target_dir=target,
         local_dir=Path(args.local) if args.local else None,
         workers=args.workers,
         dry=args.dry_run,
+        journal=entry,
     )
+    if not args.dry_run:
+        _save_journal(entry)
     return 0 if not stats.failed else 2
 
 
@@ -173,15 +189,18 @@ def cmd_finalize(args) -> int:
         print(f"目标目录不存在：{target}")
         return 1
     data = json.loads(Path(args.manifest).read_text("utf-8"))
+    entry = journal.Entry("finalize", target)
     written = indexfile.write(
         target_game_dir=target,
         version_code=data["version_code"],
         version_name=data.get("version_name") or "1.0.0",
         index_csv=Path(args.index_csv),
         paths_from=Path(args.paths_from) if args.paths_from else None,
+        journal=entry,
     )
     for p in written:
         print(f"  写入 {p}")
+    _save_journal(entry)
     folder = data.get("game_folder_name")
     if folder and target.name != folder:
         print(f"\n目录名应为 {folder}，当前是 {target.name}，否则启动器找不到 exe")
@@ -214,7 +233,74 @@ def cmd_remove(args) -> int:
         yes=args.yes,
         dry=args.dry_run,
         force=args.force,
+        trash=args.trash,
     )
+
+
+def cmd_repair(args) -> int:
+    target = Path(args.target)
+    data = json.loads(Path(args.manifest).read_text("utf-8"))
+    stats = repair.run(
+        target,
+        data,
+        base=Path(args.base) if args.base else None,
+        workers=args.workers,
+        sample=args.sample,
+        full=args.full,
+        dry=args.dry_run,
+    )
+    return 0 if not stats["failed"] else 2
+
+
+def cmd_rollback(args) -> int:
+    target = Path(args.target) if args.target else None
+    path = journal.find(target, args.id)
+    if path is None:
+        rows = journal.available(target)
+        if not rows:
+            print("没有可回退的记录。账本写在 out/journal/，只有 link、fetch、finalize、quickstart 会留下。")
+            return 1
+        print("可回退的记录：")
+        for item in rows[-10:]:
+            try:
+                data = journal.load(item)
+            except (OSError, ValueError):
+                continue
+            when = time.strftime("%m-%d %H:%M", time.localtime(data.get("time", 0)))
+            print(f"  {item.name}  {when}  新建 {len(data.get('created', [])):,} 个  "
+                  f"覆盖 {len(data.get('backups', []))} 个")
+        print("\n用 --id <文件名> 指定，不加参数默认用最近一条。")
+        return 0
+
+    data = journal.load(path)
+    print(f"账本 {path.name}")
+    print(f"  目标 {data['target']}")
+    print(f"  新建 {len(data['created']):,} 个文件，覆盖过 {len(data['backups'])} 个")
+    print("  回退会删掉这些新建文件，并把覆盖前的备份放回去；源区不受影响")
+
+    if args.dry_run:
+        removed, restored, skipped, notes = journal.rollback(path, dry=True)
+        print(f"试运行：会删 {removed:,} 个，还原 {restored} 个，保留 {skipped} 个")
+        for line in notes[:8]:
+            print(f"  {line}")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("当前不是交互终端，确认无误请加 --yes 再执行。")
+            return 1
+        if not _ask_yes("确认撤销", default=False):
+            print("已取消。")
+            return 1
+
+    removed, restored, skipped, notes = journal.rollback(path)
+    print(f"已删 {removed:,} 个新建文件，还原 {restored} 个备份，保留 {skipped} 个")
+    for line in notes[:8]:
+        print(f"  {line}")
+    if skipped:
+        print("被保留的是操作之后又被改过或删不掉的文件，自己看一眼再决定。")
+    path.unlink(missing_ok=True)
+    print("账本已作废，同一笔不能再回退。")
+    return 0
 
 
 def cmd_quickstart(args) -> int:
@@ -326,11 +412,14 @@ def cmd_quickstart(args) -> int:
         print(f"  python -m azp fetch --plan {csv_path} --target \"{target_dir}\" --workers {args.jobs}")
         return 0
 
+    entry = journal.Entry("quickstart", target_dir)
+
     print("\n[3/5] 建立硬链接")
-    link.run(rows, base_dir=base_dir, target_dir=target_dir, local_dir=base_dir, workers=8)
+    link.run(rows, base_dir=base_dir, target_dir=target_dir, local_dir=base_dir,
+             workers=8, journal=entry)
 
     print("\n[4/5] 下载缺失文件，Ctrl+C 中断后重跑会继续")
-    fetch.run(rows, target_dir, workers=args.jobs)
+    fetch.run(rows, target_dir, workers=args.jobs, journal=entry)
 
     print("\n[5/5] 补齐 _index 并校验")
     written = indexfile.write(
@@ -339,10 +428,12 @@ def cmd_quickstart(args) -> int:
         version_name=target_man.get("version_name") or "1.0.0",
         index_csv=out / region_key(target_ch) / "index.csv",
         paths_from=base_dir,
+        journal=entry,
     )
     for p in written:
         print(f"  写入 {p}")
     _verify_dir(target_man, target_dir, args.sample)
+    _save_journal(entry)
 
     print("\n完成。启动目标区启动器做一次校验修复再进游戏。两个区别同时开。")
     return 0
@@ -407,7 +498,15 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("--dry-run", action="store_true", help="只统计，不删")
     rm.add_argument("--yes", action="store_true", help="跳过确认")
     rm.add_argument("--force", action="store_true", help="目录不像客户端时也允许删")
+    rm.add_argument("--trash", action="store_true", help="移入回收站而不是彻底删除")
     rm.set_defaults(func=cmd_remove)
+
+    rb = sub.add_parser("rollback", help="撤销上一次写入，按 out/journal 账本回退")
+    rb.add_argument("--target", help="只看这个目标目录的账本")
+    rb.add_argument("--id", help="指定账本文件名")
+    rb.add_argument("--dry-run", action="store_true", help="只算不删")
+    rb.add_argument("--yes", action="store_true", help="跳过确认")
+    rb.set_defaults(func=cmd_rollback)
 
     q = sub.add_parser("quickstart", help="交互式向导：一条命令走完全流程")
     q.add_argument("--out", default=str(DEFAULT_OUT))
@@ -476,6 +575,16 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--dir", required=True)
     v.add_argument("--sample", type=int, default=20, help="抽样做 MD5 的文件数，0 表示跳过")
     v.set_defaults(func=cmd_verify)
+
+    rp = sub.add_parser("repair", help="按清单检查并修好坏掉的文件")
+    rp.add_argument("--target", required=True)
+    rp.add_argument("--manifest", required=True)
+    rp.add_argument("--base", help="源区目录，有同 MD5 的文件就重建硬链接而不是下载")
+    rp.add_argument("--sample", type=int, default=20, help="抽样做 MD5 的文件数，0 表示只比大小")
+    rp.add_argument("--full", action="store_true", help="全量校验 MD5，95 GiB 要跑几分钟")
+    rp.add_argument("--workers", type=int, default=16)
+    rp.add_argument("--dry-run", action="store_true")
+    rp.set_defaults(func=cmd_repair)
     return p
 
 

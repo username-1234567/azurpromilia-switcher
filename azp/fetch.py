@@ -10,6 +10,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from .journal import Entry
+
 CHUNK = 1 << 20
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) azp/0.1"
 
@@ -150,7 +152,8 @@ def download_one(pool: Connections, url: str, dest: Path, size: int, md5: str,
     return False, last
 
 
-def run(rows: list[dict], target: Path, workers: int = 16) -> Stats:
+def run(rows: list[dict], target: Path, workers: int = 16,
+        journal: Entry | None = None) -> Stats:
     pending = [r for r in rows if r["action"] == "download"]
     stats = Stats(len(pending), sum(r["size"] for r in pending))
     if not pending:
@@ -171,6 +174,8 @@ def run(rows: list[dict], target: Path, workers: int = 16) -> Stats:
             dest = target / row["path"]
             ok, msg = download_one(pool, row["src_or_url"], dest, row["size"], row["md5"])
             stats.add(row["size"], ok, row["path"], msg)
+            if ok and msg == "ok" and journal is not None:
+                journal.add_created(dest, row["size"])
             if not ok:
                 print(f"  ! 失败 {row['path']}: {msg}")
 
