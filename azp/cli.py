@@ -421,7 +421,7 @@ def cmd_quickstart(args) -> int:
     print("\n[4/5] 下载缺失文件，Ctrl+C 中断后重跑会继续")
     fetch.run(rows, target_dir, workers=args.jobs, journal=entry)
 
-    print("\n[5/5] 补齐 _index 并校验")
+    print("\n[5/5] 补齐 _index，校验并在必要时修复")
     written = indexfile.write(
         target_game_dir=target_dir,
         version_code=target_man["version_code"],
@@ -432,10 +432,21 @@ def cmd_quickstart(args) -> int:
     )
     for p in written:
         print(f"  写入 {p}")
-    _verify_dir(target_man, target_dir, args.sample)
+    if not _verify_dir(target_man, target_dir, args.sample):
+        print("\n  对不上的文件按清单修一遍")
+        fixed = repair.run(
+            target_dir, target_man, base=base_dir, workers=args.jobs, sample=args.sample
+        )
+        if fixed["failed"]:
+            print("  还有修不好的，进游戏前再跑一次 azp repair")
+        else:
+            print("\n  复查")
+            _verify_dir(target_man, target_dir, args.sample)
     _save_journal(entry)
 
     print("\n完成。启动目标区启动器做一次校验修复再进游戏。两个区别同时开。")
+    print(f"改坏了：azp rollback --target \"{target_dir}\" 撤销这次写入，"
+          f"azp repair 只修坏文件。")
     return 0
 
 
@@ -446,11 +457,12 @@ def _verify_dir(data: dict, root: Path, sample: int = 20) -> bool:
     print(f"  清单 {len(files)} 个文件，缺失 {len(missing)}，大小不符 {len(wrong)}")
     bad = 0
     if sample and not missing and not wrong:
-        for path in random.sample(sorted(files), min(sample, len(files))):
+        picks = random.sample(sorted(files), min(sample, len(files)))
+        for path in picks:
             if plan.md5_of(root / path) != files[path]["md5"]:
                 bad += 1
                 print(f"    ! MD5 不符 {path}")
-        print(f"  抽样 {sample} 个，通过 {sample - bad} 个")
+        print(f"  抽样 {len(picks)} 个，通过 {len(picks) - bad} 个")
     return not (missing or wrong or bad)
 
 
