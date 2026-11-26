@@ -444,7 +444,7 @@ def cmd_quickstart(args) -> int:
             _verify_dir(target_man, target_dir, args.sample)
     _save_journal(entry)
 
-    print("\n完成。启动目标区启动器做一次校验修复再进游戏。两个区别同时开。")
+    print("\n完成。启动目标区启动器做一次校验修复再进游戏。两个区不要同时开。")
     print(f"改坏了：azp rollback --target \"{target_dir}\" 撤销这次写入，"
           f"azp repair 只修坏文件。")
     return 0
