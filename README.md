@@ -102,3 +102,8 @@ python -m azp remove --target "D:/AzurPromiliaGlobal/AzurPromilia_TC_game" \
 工具只读本机启动器配置调官方接口，不含游戏资源、渠道密钥和账号凭据。改本地文件可能违反游戏用户协议，账号与数据风险自负。非官方项目，与开发商、发行商无关。
 
 License: MIT，见 [`LICENSE`](LICENSE)；许可范围、风险与第三方依赖见 [`NOTICE`](NOTICE)。
+
+## 预计今日更新内容
+
+- 增加日服支持
+- 反虚化
