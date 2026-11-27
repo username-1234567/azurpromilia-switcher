@@ -6,11 +6,15 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-CLIENT_MARKS = ("_index", "AzurPromilia_Data")
+from .yostar import PATH_MAP
+
+CLIENT_MARKS = ("_index", "AzurPromilia_Data", "AzurPromiliaJP_Data",
+                "game-launcher-config.json")
 
 
 @dataclass
@@ -25,13 +29,35 @@ class Scan:
     own_bytes: int = 0
 
 
-def _same_file(base: Path, rel: str, st: os.stat_result) -> bool:
-    """目标文件与源区同路径文件是否同一份数据（同卷比对文件索引）。"""
+def _is_reparse_point(path: Path) -> bool:
     try:
-        other = (base / rel).stat()
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)
     except OSError:
         return False
-    return (other.st_dev, other.st_ino) == (st.st_dev, st.st_ino)
+    return path.is_symlink() or bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _candidates(rel: str) -> list[str]:
+    """目标文件的路径，外加日服/国服互相映射后的名字。"""
+    out = [rel]
+    for jp, cn in PATH_MAP:
+        if rel.startswith(jp):
+            out.append(cn + rel[len(jp):])
+        elif rel.startswith(cn):
+            out.append(jp + rel[len(cn):])
+    return out
+
+
+def _same_file(base: Path, rel: str, st: os.stat_result) -> bool:
+    """目标文件与源区同路径文件是否同一份数据（同卷比对文件索引）。"""
+    for cand in _candidates(rel):
+        try:
+            other = (base / cand).stat()
+        except OSError:
+            continue
+        if (other.st_dev, other.st_ino) == (st.st_dev, st.st_ino):
+            return True
+    return False
 
 
 def scan(root: Path, base: Path | None = None) -> Scan:
@@ -41,7 +67,8 @@ def scan(root: Path, base: Path | None = None) -> Scan:
     所以给了 base 就按文件索引比对，避免把暂存/备份目录也算成源区。
     """
     stats = Scan()
-    for dirpath, _dirs, names in os.walk(root):
+    for dirpath, dirs, names in os.walk(root):
+        dirs[:] = [name for name in dirs if not _is_reparse_point(Path(dirpath) / name)]
         for name in names:
             path = Path(dirpath) / name
             try:
@@ -70,16 +97,17 @@ def looks_like_client(root: Path) -> bool:
 
 def check_target(target: Path, base: Path | None, force: bool) -> str:
     """返回拒绝理由，空串表示可以继续。"""
-    if not target.exists():
-        return f"目录不存在：{target}"
-    if not target.is_dir():
-        return f"不是目录：{target}"
-    if len(target.parts) < 2:
-        return f"这是盘符根，拒绝删除：{target}"
-    if len(target.parts) < 3 and not force:
-        return f"路径太浅，拒绝删除：{target}（确实要删请加 --force）"
-
     root = target.resolve()
+    if not root.exists():
+        return f"目录不存在：{root}"
+    if not root.is_dir():
+        return f"不是目录：{root}"
+    if root.parent == root:
+        return f"这是盘符根，拒绝删除：{root}"
+    if len(root.parts) < 3 and not force and not looks_like_client(root):
+        return f"路径太浅，拒绝删除：{root}（确实要删请加 --force）"
+
+    target = root
     if base is not None:
         base_root = base.resolve()
         if root == base_root:
@@ -95,23 +123,30 @@ def check_target(target: Path, base: Path | None, force: bool) -> str:
 
 
 def _delete_tree(root: Path, errors: list[str]) -> None:
-    for dirpath, dirnames, names in os.walk(root, topdown=False):
-        for name in names:
-            path = Path(dirpath) / name
-            try:
-                path.unlink()
-            except OSError:
+    try:
+        with os.scandir(root) as entries:
+            children = list(entries)
+    except OSError as exc:
+        errors.append(f"{root}: {exc}")
+        return
+    for entry in children:
+        path = Path(entry.path)
+        try:
+            if _is_reparse_point(path):
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink()
+            elif entry.is_dir(follow_symlinks=False):
+                _delete_tree(path, errors)
+            else:
                 try:
+                    path.unlink()
+                except OSError:
                     path.chmod(0o666)
                     path.unlink()
-                except OSError as exc:
-                    errors.append(f"{path}: {exc}")
-        for name in dirnames:
-            path = Path(dirpath) / name
-            try:
-                path.rmdir()
-            except OSError:
-                pass
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
     try:
         root.rmdir()
     except OSError as exc:
@@ -167,7 +202,9 @@ def _to_recycle_bin(root: Path) -> tuple[bool, str]:
 
 
 def run(target: Path, base: Path | None = None, yes: bool = False,
-        dry: bool = False, force: bool = False, trash: bool = False) -> int:
+        dry: bool = False, force: bool = False, trash: bool = False,
+        fallback: bool = True) -> int:
+    target = target.resolve()
     reason = check_target(target, base, force)
     if reason:
         print(reason)
@@ -202,6 +239,9 @@ def run(target: Path, base: Path | None = None, yes: bool = False,
         if ok:
             print(f"已移入回收站，{target} 不在原位了；反悔的话从回收站还原")
             return 0
+        if not fallback:
+            print(f"放进回收站失败（{why}），已停下，没有删除任何文件")
+            return 3
         print(f"放进回收站失败（{why}），改用直接删除")
 
     errors: list[str] = []

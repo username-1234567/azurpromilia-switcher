@@ -12,11 +12,16 @@ from pathlib import Path
 
 from .journal import Entry
 from .manifest import encrypt_index
+from .plan import safe_rel
 
 
 def write(target_game_dir: Path, version_code: str, version_name: str,
           index_csv: Path, paths_from: Path | None = None,
           journal: Entry | None = None) -> list[Path]:
+    # versionCode 来自接口，直接当文件名词用：必须是不带分隔符的单段名字
+    version_code = safe_rel(str(version_code))
+    if "/" in version_code:
+        raise ValueError(f"versionCode 不能含路径分隔符：{version_code!r}")
     idx = target_game_dir / "_index"
     idx.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []

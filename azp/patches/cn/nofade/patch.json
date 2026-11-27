@@ -1,0 +1,10 @@
+{
+  "name": "反虚化（角色虚化移除）",
+  "region": "cn",
+  "resource_version": "3271113",
+  "file": ".res/default_package/BundleFiles/rjmh704fkrsjimysndpsg.r",
+  "size": 4744175,
+  "original_md5": "0d53b558d0585a35fcf528e2d5df3d03",
+  "patched_md5": "3c884b36b9a26061c107feb2a4603743",
+  "note": "只改大世界相机预制体 51 个组件；文件大小不变，逐段 CRC 已配平，启动器校验能过"
+}

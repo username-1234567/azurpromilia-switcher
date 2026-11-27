@@ -4,6 +4,28 @@ __pycache__/
 .venv/
 venv/
 out/
+build/
+dist/
 *.csv
 *.jsonl
+regions.json
 !requirements.txt
+
+# IDE / agent 的本地状态与扫描产物，不属于源码
+.arts/
+.security/
+.codeartsdoer/
+.coverage
+htmlcov/
+
+
+# 本机密钥、配置与开发产物，不进仓库
+*.local.json
+*.key
+.env
+secrets.*
+.nofade-backup/
+# 启动器配置里带 secretKey，误拷到仓库根也不能被提交
+app_config.dat
+*.asar
+*.token

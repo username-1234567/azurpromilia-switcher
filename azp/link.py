@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -15,6 +16,20 @@ class LinkStats:
         self.skipped = 0
         self.failed: list[tuple[str, str]] = []
         self.bytes = 0
+        self._lock = threading.Lock()
+
+    def add_created(self, size: int) -> None:
+        with self._lock:
+            self.created += 1
+            self.bytes += size
+
+    def add_skipped(self) -> None:
+        with self._lock:
+            self.skipped += 1
+
+    def add_failed(self, path: str, msg: str) -> None:
+        with self._lock:
+            self.failed.append((path, msg))
 
 
 def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool,
@@ -22,31 +37,29 @@ def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool,
     try:
         if dst.exists():
             if dst.stat().st_size == size:
-                stats.skipped += 1
+                stats.add_skipped()
                 return
-            stats.failed.append((str(dst), "目标已存在且大小不同"))
+            stats.add_failed(str(dst), "目标已存在且大小不同")
             return
         if not src.exists():
-            stats.failed.append((str(src), "源文件不存在"))
+            stats.add_failed(str(src), "源文件不存在")
             return
         if src.stat().st_size != size:
-            stats.failed.append((str(src), "源文件大小与清单不符"))
+            stats.add_failed(str(src), "源文件大小与清单不符")
             return
         if dry:
-            stats.created += 1
-            stats.bytes += size
+            stats.add_created(size)
             return
         dst.parent.mkdir(parents=True, exist_ok=True)
         os.link(src, dst)
-        stats.created += 1
-        stats.bytes += size
+        stats.add_created(size)
         if journal is not None:
             journal.add_created(dst, size)
     except OSError as exc:
         hint = ""
         if getattr(exc, "winerror", None) == 17:
             hint = "（硬链接不能跨卷，请把目标放在同一分区）"
-        stats.failed.append((str(dst), f"{exc}{hint}"))
+        stats.add_failed(str(dst), f"{exc}{hint}")
 
 
 def run(rows: list[dict], base_dir: Path, target_dir: Path,

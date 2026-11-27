@@ -33,3 +33,5 @@ azp = "azp.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["azp*"]
+[tool.setuptools.package-data]
+azp = ["patches/cn/nofade/*"]

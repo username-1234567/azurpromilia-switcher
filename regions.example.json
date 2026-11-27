@@ -1,0 +1,13 @@
+{
+  "_note": "复制成 regions.json 再改（regions.json 不进仓库）。给同一套 Manjuu/Jimi 启动器的新渠道用：填 app_id、channel_codes、domains，跑 azp regions 确认。日服是内置的（kind=yostar），不用在这里配。",
+  "regions": {
+    "xx": {
+      "label": "新区服",
+      "app_id": "",
+      "channel_codes": [],
+      "domains": [],
+      "lang": "zh-Hans",
+      "folder": ""
+    }
+  }
+}

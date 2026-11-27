@@ -9,7 +9,12 @@ from pathlib import Path
 
 from . import crypto
 from .api import Api, ApiError, http_get_bytes, user_agent
+from .plan import safe_rel
 
+# 这两个是启动器 `_index` 缓存的固定混淆参数：同一份硬编码在所有玩家机器的官方
+# 启动器里，用来让索引文件不能直接当文本读。它不是任何用户的凭据，也不保护账号数据，
+# 换成别的值启动器反而不认。真正的渠道密钥（app_config.dat 的 secretKey、日服签名盐）
+# 仍然只在运行时从本机启动器读，见 channels.py / yostar.py。
 INDEX_KEY = b"mJ9dH2bR7fT1zW4eQ6cY8a=="
 INDEX_IV = b"aP3sD8fG0hJ6kL9z"
 
@@ -56,7 +61,8 @@ def parse_index(text: str, package_type: int) -> dict:
                 size_i = int(size)
             except ValueError:
                 continue
-            files[path.replace("\\", "/")] = {
+            # 清单是远端数据，路径在源头就规范化并拒绝越界，下游才敢直接拼目录
+            files[safe_rel(path)] = {
                 "size": size_i,
                 "md5": md5.lower(),
                 "url": url,

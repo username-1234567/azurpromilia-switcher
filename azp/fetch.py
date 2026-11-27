@@ -1,8 +1,7 @@
-"""增量下载器：多线程、断点续传、逐文件 MD5 校验、连接复用。"""
+"""增量下载器：多线程、断点续传、逐文件校验、连接复用。"""
 
 from __future__ import annotations
 
-import hashlib
 import http.client
 import os
 import threading
@@ -10,6 +9,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from . import hashes, native
 from .journal import Entry
 
 CHUNK = 1 << 20
@@ -48,11 +48,16 @@ class Stats:
 
 
 def md5_of(path: Path) -> str:
-    h = hashlib.md5()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(CHUNK), b""):
-            h.update(block)
-    return h.hexdigest()
+    return hashes.md5_of(path)
+
+
+def _match(path: Path, expect: str, kind: str) -> bool:
+    """日服的 CRC64 走 7za，Python 逐字节算不动 30 GiB。"""
+    if kind == hashes.CRC64:
+        got = native.crc64_file(path)
+        if got is not None:
+            return str(got) == expect
+    return hashes.digest(path, kind) == expect
 
 
 class Connections:
@@ -87,15 +92,34 @@ class Connections:
                 pass
 
 
-def download_one(pool: Connections, url: str, dest: Path, size: int, md5: str,
-                 retries: int = 4) -> tuple[bool, str]:
+def download_one(pool: Connections, url: str, dest: Path, size: int, expect: str,
+                 kind: str = hashes.MD5, retries: int = 4) -> tuple[bool, str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         try:
-            if dest.stat().st_size == size and md5_of(dest) == md5:
+            if dest.stat().st_size == size and _match(dest, expect, kind):
                 return True, "skip"
         except OSError:
             pass
+    if size == 0:
+        # 空文件没有分片可续，直接请求一次，确认服务端确实提供这份资源
+        headers = {"User-Agent": UA, "Accept-Encoding": "identity"}
+        try:
+            conn, path = pool.get(url)
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read()
+            if resp.status not in (200, 206):
+                return False, f"HTTP {resp.status}"
+            if body:
+                return False, f"服务端返回 {len(body)} 字节，清单写的是 0"
+            if hashes.digest_bytes(b"", kind) != expect:
+                return False, f"{hashes.label(kind)} 不符"
+            dest.write_bytes(b"")
+            return True, "ok"
+        except Exception as exc:  # noqa: BLE001
+            pool.drop(url)
+            return False, f"{type(exc).__name__}: {exc}"
 
     part = dest.with_suffix(dest.suffix + ".part")
     last = ""
@@ -103,13 +127,19 @@ def download_one(pool: Connections, url: str, dest: Path, size: int, md5: str,
     for attempt in range(retries):
         offset = part.stat().st_size if part.exists() else 0
         if offset > size:
-            part.unlink()
+            try:
+                part.unlink()
+            except OSError:
+                pass
             offset = 0
-        if offset == size:
-            if md5_of(part) == md5:
+        if part.exists() and offset == size:
+            if _match(part, expect, kind):
                 os.replace(part, dest)
                 return True, "ok"
-            part.unlink()
+            try:
+                part.unlink()
+            except OSError:
+                pass
             offset = 0
 
         headers = {"User-Agent": UA, "Accept-Encoding": "identity"}
@@ -138,8 +168,8 @@ def download_one(pool: Connections, url: str, dest: Path, size: int, md5: str,
             if part.stat().st_size != size:
                 last = f"大小不符 {part.stat().st_size}/{size}"
                 continue
-            if md5_of(part) != md5:
-                last = "MD5 不符"
+            if not _match(part, expect, kind):
+                last = f"{hashes.label(kind)} 不符"
                 part.unlink(missing_ok=True)
                 pool.drop(url)
                 continue
@@ -149,35 +179,54 @@ def download_one(pool: Connections, url: str, dest: Path, size: int, md5: str,
             last = f"{type(exc).__name__}: {exc}"
             pool.drop(url)
             time.sleep(1.5 * (attempt + 1))
+
     return False, last
 
 
 def run(rows: list[dict], target: Path, workers: int = 16,
-        journal: Entry | None = None) -> Stats:
+        journal: Entry | None = None, kind: str | None = None) -> Stats:
     pending = [r for r in rows if r["action"] == "download"]
+    if kind is None:
+        kind = pending[0]["hash_kind"] if pending else hashes.MD5
     stats = Stats(len(pending), sum(r["size"] for r in pending))
     if not pending:
         print("  没有需要下载的文件")
         return stats
+    # 边下边写账本：Ctrl+C 之后 rollback 还能找到这批文件
+    save_every = max(200, stats.total_files // 20)
 
     lock = threading.Lock()
     queue = list(pending)
     pool = Connections()
     stop = threading.Event()
+    errors: list[BaseException] = []
 
     def worker() -> None:
-        while not stop.is_set():
+        try:
+            while not stop.is_set():
+                with lock:
+                    if not queue:
+                        return
+                    row = queue.pop()
+                dest = target / row["path"]
+                try:
+                    ok, msg = download_one(pool, row["src_or_url"], dest, row["size"],
+                                           row["md5"], kind)
+                except Exception as exc:  # noqa: BLE001
+                    ok, msg = False, f"{type(exc).__name__}: {exc}"
+                stats.add(row["size"], ok, row["path"], msg)
+                if ok and msg == "ok" and journal is not None:
+                    with lock:
+                        journal.add_created(dest, row["size"])
+                        hit = len(journal.created) % save_every == 0
+                    if hit:
+                        journal.save()
+                if not ok:
+                    print(f"  ! 失败 {row['path']}: {msg}")
+        except BaseException as exc:  # Ctrl+C 只会落到主线程，这里是兜底
             with lock:
-                if not queue:
-                    return
-                row = queue.pop()
-            dest = target / row["path"]
-            ok, msg = download_one(pool, row["src_or_url"], dest, row["size"], row["md5"])
-            stats.add(row["size"], ok, row["path"], msg)
-            if ok and msg == "ok" and journal is not None:
-                journal.add_created(dest, row["size"])
-            if not ok:
-                print(f"  ! 失败 {row['path']}: {msg}")
+                errors.append(exc)
+            stop.set()
 
     def ticker() -> None:
         while not stop.wait(5):
@@ -185,11 +234,24 @@ def run(rows: list[dict], target: Path, workers: int = 16,
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, workers))]
     tick = threading.Thread(target=ticker, daemon=True)
-    tick.start()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    stop.set()
+    try:
+        tick.start()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if journal is not None and journal.created:
+            journal.save()
+    finally:
+        stop.set()
+        for t in threads:
+            if t.is_alive():
+                t.join()
+        if tick.is_alive():
+            tick.join()
+        if journal is not None and journal.created:
+            journal.save()
+    if errors:
+        raise errors[0]
     print(f"  完成：{stats.report()}")
     return stats

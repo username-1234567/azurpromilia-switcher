@@ -8,10 +8,14 @@ import subprocess
 _BITS = {16: 128, 24: 192, 32: 256}
 
 
+class BackendMissing(RuntimeError):
+    """pycryptodome 和系统 openssl 都没有。"""
+
+
 def _openssl(encrypt: bool, key: bytes, iv: bytes, data: bytes) -> bytes:
     exe = shutil.which("openssl")
     if not exe:
-        raise RuntimeError(
+        raise BackendMissing(
             "缺少 AES 实现：请 pip install pycryptodome，或安装 openssl 并加入 PATH"
         )
     alg = f"-aes-{_BITS[len(key)]}-cbc"

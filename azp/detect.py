@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import string
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ class Install:
     root: Path
     launcher_exe: Path
     game_dirs: list[Path] = field(default_factory=list)
+    kind: str = "manjuu"  # manjuu / yostar
 
     @property
     def version(self) -> str:
@@ -33,6 +35,18 @@ class Install:
     @property
     def game_dir(self) -> Path | None:
         return self.game_dirs[0] if self.game_dirs else None
+
+
+def looks_like_yostar(launcher_exe: Path) -> bool:
+    """日服启动器是 Electron 套壳，没有 app_config.dat，靠特征文件认。"""
+    if "azupro" in launcher_exe.name.lower():
+        return True
+    upd = launcher_exe.parent / "resources" / "app-update.yml"
+    try:
+        text = upd.read_text("utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "azupro" in text or "yo-star" in text
 
 
 def _registry_game_dirs() -> list[Path]:
@@ -60,12 +74,20 @@ def _registry_game_dirs() -> list[Path]:
     return found
 
 
-def _game_dirs_in(root: Path) -> list[Path]:
+def _game_dirs_in(root: Path, kind: str = "manjuu") -> list[Path]:
     out = []
     if not root.is_dir():
         return out
+    if kind == "yostar" and root.name.upper() == "AZUPRO_JP" and (
+        root / "AzurPromiliaJP_Data"
+    ).is_dir():
+        return [root]
     for child in root.iterdir():
         if not child.is_dir():
+            continue
+        if kind == "yostar":
+            if child.name.upper() == "AZUPRO_JP" and (child / "AzurPromiliaJP_Data").is_dir():
+                out.append(child)
             continue
         if child.name.lower().endswith("_game") and any(
             (child / n).exists() for n in ("AzurPromilia.exe", "AzurPromilia_Data")
@@ -75,35 +97,93 @@ def _game_dirs_in(root: Path) -> list[Path]:
 
 
 def _installs_in(root: Path) -> list[Install]:
-    """root 下形如 <版本号>/launcher.exe 的启动器目录。"""
+    """root 下形如 <版本号>/launcher.exe（或 *Gamelauncher.exe）的启动器目录。"""
     out = []
     if not root.is_dir():
         return out
+    # Yostar 有可能把 exe 直接放在安装根，没有版本子目录
+    direct = sorted(root.glob("*amelauncher.exe"))
+    if direct:
+        out.append(Install(root=root, launcher_exe=direct[0],
+                           game_dirs=_game_dirs_in(root, "yostar"), kind="yostar"))
     for child in root.iterdir():
         if not child.is_dir():
             continue
         exe = child / "launcher.exe"
+        kind = "manjuu"
         if not exe.exists():
-            continue
+            candidates = sorted(child.glob("*amelauncher.exe"))
+            if not candidates:
+                continue
+            exe = candidates[0]
+            kind = "yostar"
         try:
             exe.relative_to(root)
         except ValueError:
             continue
-        out.append(Install(root=root, launcher_exe=exe, game_dirs=_game_dirs_in(root)))
+        out.append(Install(root=root, launcher_exe=exe,
+                           game_dirs=_game_dirs_in(root, kind), kind=kind))
     return out
+
+
+def from_path(raw: str | Path) -> Install:
+    """从 launcher.exe、版本目录或安装根手动构造一个 Install。
+
+    装在非标准位置、扫描扫不到时用。认不出启动器就抛 FileNotFoundError。
+    """
+    p = Path(raw).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"路径不存在：{p}")
+    if p.is_dir() and p.name.lower().endswith("_game"):
+        p = p.parent
+    if p.is_dir() and p.parent == p:
+        raise ValueError(f"不要指向盘符根：{p}，给安装根或 launcher.exe")
+    if p.is_file():
+        exe = p
+    elif (p / "launcher.exe").exists():
+        exe = p / "launcher.exe"
+    else:
+        cands = [
+            c / "launcher.exe"
+            for c in p.iterdir()
+            if c.is_dir() and (c / "launcher.exe").exists()
+        ]
+        cands += [
+            e
+            for c in p.iterdir()
+            if c.is_dir()
+            for e in c.glob("*amelauncher.exe")
+        ]
+        if not cands:
+            raise FileNotFoundError(f"{p} 下没有 launcher.exe 或 *Gamelauncher.exe")
+        exe = max(cands, key=lambda e: _version_key(e.parent.name))
+
+    kind = "yostar" if looks_like_yostar(exe) else "manjuu"
+    root = exe.parent.parent if _is_version_dir(exe.parent.name) else exe.parent
+    return Install(root=root, launcher_exe=exe, game_dirs=_game_dirs_in(root, kind), kind=kind)
+
+
+def _install_root_of(path: Path) -> Path:
+    """注册表里可能是游戏目录，也可能直接是安装根；统一成安装根再扫。"""
+    p = path
+    if p.name.lower().endswith("_game") or any(
+        (p / n).exists() for n in ("AzurPromilia.exe", "AzurPromilia_Data", "AzurPromiliaJP_Data")
+    ):
+        return p.parent
+    return p
 
 
 def find_installs(extra_roots: list[str] | None = None) -> list[Install]:
     roots: list[Path] = []
     for game_dir in _registry_game_dirs():
-        roots.append(game_dir.parent)
+        roots.append(_install_root_of(game_dir))
     for drive in string.ascii_uppercase:
         base = Path(f"{drive}:/")
         if not base.exists():
             continue
         try:
             for child in base.iterdir():
-                if child.is_dir() and child.name.lower().startswith("azurpromilia"):
+                if child.is_dir() and child.name.lower().startswith(("azurpromilia", "azupro")):
                     roots.append(child)
         except OSError:
             continue
@@ -137,3 +217,11 @@ def _version_key(text: str) -> tuple:
     for chunk in text.replace("-", ".").split("."):
         parts.append(int(chunk) if chunk.isdigit() else 0)
     return tuple(parts)
+
+def _is_version_dir(name: str) -> bool:
+    """是不是 `1.0.0` 这种版本目录。
+
+    不能用 `_version_key(name) != (0,)` 判断：`azurpromilia-jp` 这种带横线的普通目录
+    会得到 (0, 0)，于是扁平安装的日服启动器会被多往上一层，root 直接算错。
+    """
+    return bool(re.fullmatch(r"[0-9][0-9.\-]*", name))

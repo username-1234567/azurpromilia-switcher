@@ -113,7 +113,8 @@ def _aes_item() -> Item:
     return Item("AES 后端", OK, backend)
 
 
-def _path_items(label: str, path: Path, need_bytes: int = 0) -> list[Item]:
+def _path_items(label: str, path: Path, need_bytes: int = 0,
+                probe_links: bool = True) -> list[Item]:
     items: list[Item] = []
     root = _probe_root(path)
     if not root.exists():
@@ -128,8 +129,13 @@ def _path_items(label: str, path: Path, need_bytes: int = 0) -> list[Item]:
     else:
         items.append(Item(f"{label}文件系统", WARN, "读不到卷信息，跳过"))
 
-    ok, why = hardlink_works(path)
-    items.append(Item(f"{label}硬链接", OK if ok else FAIL, why or "可创建"))
+    if probe_links:
+        ok, why = hardlink_works(path)
+        items.append(Item(f"{label}硬链接", OK if ok else FAIL, why or "可创建"))
+    else:
+        status = OK if label == "源目录" else WARN
+        detail = "不在源区实测，由目标卷探测判断" if label == "源目录" else "未实测（避免写入该目录）"
+        items.append(Item(f"{label}硬链接", status, detail))
 
     if exists:
         probe = path
@@ -170,6 +176,33 @@ def _long_path_item(target: Path, manifest: dict | None) -> Item | None:
     return Item("长路径", WARN, detail)
 
 
+def _running_games() -> list[str]:
+    """正在运行的游戏进程。读不到就返回空，宁可漏报也不误报。"""
+    if os.name != "nt":
+        return []
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names: set[str] = set()
+    for line in out.splitlines():
+        name = line.split(",", 1)[0].strip('"').lower()
+        if name.endswith(".exe") and ("azurpromilia" in name or "azupro" in name):
+            names.add(name)
+    return sorted(names)
+
+
+def running_games() -> list[str]:
+    """正在运行的游戏进程。"""
+    return _running_games()
+
+
 def pending_bytes(rows: list[dict], target: Path) -> int:
     """计划里还真正需要落盘的量：目标已存在且大小一致的文件不计。"""
     total = 0
@@ -190,6 +223,7 @@ def run(
     target: Path | None = None,
     need_bytes: int = 0,
     manifest: dict | None = None,
+    probe_links: bool = True,
 ) -> tuple[bool, list[Item]]:
     """跑一遍自检。返回 (是否有致命项, 明细)。"""
     items: list[Item] = []
@@ -199,11 +233,16 @@ def run(
     else:
         items.append(Item("Python", OK, py))
     items.append(_aes_item())
+    running = running_games()
+    if running:
+        items.append(Item("游戏进程", FAIL, f"正在运行：{'、'.join(running)}，先退出游戏再跑"))
+    else:
+        items.append(Item("游戏进程", OK, "没有运行"))
 
     if base is not None:
-        items.extend(_path_items("源目录", base))
+        items.extend(_path_items("源目录", base, probe_links=False))
     if target is not None:
-        items.extend(_path_items("目标目录", target, need_bytes))
+        items.extend(_path_items("目标目录", target, need_bytes, probe_links))
 
     if base is not None and target is not None:
         base_fs, base_serial = volume_info(base)

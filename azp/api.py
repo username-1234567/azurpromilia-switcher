@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 import os
 import time
@@ -13,9 +14,26 @@ import urllib.request
 
 from .channels import Channel
 
+# 配置只有几 KB，清单也就几十 MB；响应无限读会把内存拖垮（gzip 解压后同样限量）
+MAX_RESPONSE_BYTES = 512 * 1024 * 1024
+
 
 class ApiError(RuntimeError):
     pass
+
+
+def _read_limited(resp, limit: int = MAX_RESPONSE_BYTES) -> bytes:
+    """分块读响应，超过上限就中止。urllib/gzip 的 read() 都会一次读到底。"""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        block = resp.read(1024 * 1024)
+        if not block:
+            return b"".join(chunks)
+        total += len(block)
+        if total > limit:
+            raise ApiError(f"响应超过 {limit // 2**20} MiB 上限，已中止")
+        chunks.append(block)
 
 
 def _device_id() -> str:
@@ -33,6 +51,11 @@ def user_agent(version: str) -> str:
 
 
 def _client_info(lang: str, version: str) -> str:
+    head = lang.split("-")[0].lower()
+    device_lang, country, tz = {
+        "zh": ("zh", "CN", "UTC+08:00"),
+        "ja": ("ja", "JP", "UTC+09:00"),
+    }.get(head, ("en", "CN", "UTC+08:00"))
     return json.dumps(
         {
             "UA": user_agent(version),
@@ -40,9 +63,9 @@ def _client_info(lang: str, version: str) -> str:
             "device_os": "Windows 10",
             "device_os_version": "10.0.19045",
             "device_network": "Ethernet",
-            "device_language": "zh" if lang.startswith("zh") else "en",
-            "device_timezone": "UTC+08:00",
-            "device_country": "CN",
+            "device_language": device_lang,
+            "device_timezone": tz,
+            "device_country": country,
             "app_version": version,
             "grp_trace_id": "",
             "spec_device_info": {},
@@ -89,6 +112,11 @@ class Api:
         }
 
     def get(self, path: str, params: dict[str, str], retries: int = 3, timeout: int = 30) -> dict:
+        if not self.ch.domains:
+            raise ApiError(
+                f"{self.ch.label} 没有配置接口域名。"
+                "在 regions.json 里给这个区补 domains，再重试。"
+            )
         canonical = "&".join(f"{k}={params[k]}" for k in sorted(params))
         query = urllib.parse.urlencode(params)
         last = ""
@@ -99,9 +127,10 @@ class Api:
                 req = urllib.request.Request(url, headers=self._headers(canonical, ts))
                 try:
                     with urllib.request.urlopen(req, timeout=timeout) as resp:
-                        body = resp.read()
+                        body = _read_limited(resp)
                         if resp.headers.get("Content-Encoding") == "gzip":
-                            body = gzip.decompress(body)
+                            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
+                                body = _read_limited(gz)
                     data = json.loads(body.decode("utf-8", "replace"))
                     if data.get("code") not in (0, None):
                         raise ApiError(f"接口返回 code={data.get('code')} msg={data.get('message') or data.get('msg')}")
@@ -120,6 +149,11 @@ class Api:
 
 
 def http_get_bytes(url: str, retries: int = 3, timeout: int = 120, ua: str = "") -> bytes:
+    # url 来自接口返回的 downloadUrl：只接受 http(s)，挡住 file:// 读本地文件、
+    # 以及把请求引到别的协议上去的写法
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ApiError(f"不支持的下载地址协议：{url[:80]}")
     last = ""
     for attempt in range(retries):
         req = urllib.request.Request(
@@ -127,7 +161,7 @@ def http_get_bytes(url: str, retries: int = 3, timeout: int = 120, ua: str = "")
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
+                return _read_limited(resp)
         except Exception as exc:  # noqa: BLE001
             last = f"{type(exc).__name__}: {exc}"
             time.sleep(1.5 * (attempt + 1))
