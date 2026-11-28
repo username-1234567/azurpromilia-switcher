@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azurpromilia-switcher"
-version = "0.1.0"
+version = "0.1.1"
 description = "Azur Promilia CN/global client switcher, sharing identical resources via NTFS hard links"
 readme = "README.md"
 requires-python = ">=3.10"

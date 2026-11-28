@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .. import update
 from . import backend, jobs
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -29,6 +30,9 @@ CONTENT_TYPES = {
 
 ROUTES = {
     "/api/detect": backend.detect_all,
+    "/api/update-status": lambda payload: update.status(),
+    "/api/update-check": lambda payload: update.check(manual=True),
+    "/api/add-launcher": backend.add_launcher,
     "/api/plan": backend.plan_preview,
     "/api/nofade": backend.nofade_info,
     "/api/open": backend.open_path,
@@ -110,6 +114,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(out: str = "out", port: int = 0, open_browser: bool = True) -> int:
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    update.start_auto()
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?token={TOKEN}"
     print(f"界面地址：{url}")
     print(f"清单与计划输出目录：{Path(out).resolve()}")

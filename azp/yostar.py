@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .manifest import cache_matches, read_cache
+
 GAME_TAG = "AZUPRO_JP"
 SALT_ENV = "AZP_YOSTAR_SALT"
 API = "https://api-launcher-jp.yo-star.com"
@@ -202,15 +204,27 @@ def finalize(target: Path, manifest: dict) -> list[Path]:
 def fetch(out_dir: Path, force: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "manifest.json"
-    if target.exists() and not force:
-        print(f"  已有清单，跳过（--force 可重抓）：{target}")
-        return json.loads(target.read_text("utf-8"))
+    cached = read_cache(target) if not force else None
 
     print("[日服] 查询版本")
     cfg = game_config()
     if not cfg["version"] or not cfg["basis"]:
         raise YostarError("game config 缺少版本或包路径")
     print(f"  版本 {cfg['version']}  入口 {cfg['entry']}.exe  体积 {cfg['size_text']}")
+    launch_entry = f"{cfg['entry']}.exe" if cfg["entry"] else ""
+    cache_key = {
+        "version": cfg["version"],
+        "basis": cfg["basis"],
+        "launch_entry": launch_entry,
+        "launch_params": cfg["params"],
+        "uninstall": cfg["uninstall"],
+        "cdn": cfg["cdn"],
+    }
+    if cache_matches(cached, cache_key):
+        print(f"  远端版本未变，复用清单：{target}")
+        return cached
+    if cached:
+        print("  远端版本或清单信息已变化，重新下载")
 
     url = manifest_url(cfg["version"], cfg["basis"])
     print(f"  清单 {url}")
@@ -256,8 +270,9 @@ def fetch(out_dir: Path, force: bool = False) -> dict:
         "source": source,
         "game_folder_name": FOLDER,
         "basis": source,
-        "launch_entry": f"{cfg['entry']}.exe" if cfg["entry"] else "",
+        "launch_entry": launch_entry,
         "launch_params": cfg["params"],
+        "cache_key": cache_key,
         "uninstall_script": cfg["uninstall"],
         "path_map": [list(p) for p in PATH_MAP],
         "files": files,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import string
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ UNINSTALL_ROOTS = (
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
     r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
 )
+MANUAL_FILE = Path("out") / "launchers.json"
 
 
 @dataclass
@@ -101,18 +103,19 @@ def _installs_in(root: Path) -> list[Install]:
     out = []
     if not root.is_dir():
         return out
-    # Yostar 有可能把 exe 直接放在安装根，没有版本子目录
-    direct = sorted(root.glob("*amelauncher.exe"))
-    if direct:
-        out.append(Install(root=root, launcher_exe=direct[0],
-                           game_dirs=_game_dirs_in(root, "yostar"), kind="yostar"))
+    direct = [root / "launcher.exe"] if (root / "launcher.exe").is_file() else []
+    direct += sorted(p for p in root.glob("*amelauncher.exe") if p.is_file())
+    for exe in direct:
+        kind = "yostar" if looks_like_yostar(exe) else "manjuu"
+        out.append(Install(root=root, launcher_exe=exe,
+                           game_dirs=_game_dirs_in(root, kind), kind=kind))
     for child in root.iterdir():
         if not child.is_dir():
             continue
         exe = child / "launcher.exe"
         kind = "manjuu"
         if not exe.exists():
-            candidates = sorted(child.glob("*amelauncher.exe"))
+            candidates = sorted(p for p in child.glob("*amelauncher.exe") if p.is_file())
             if not candidates:
                 continue
             exe = candidates[0]
@@ -143,7 +146,8 @@ def from_path(raw: str | Path) -> Install:
     elif (p / "launcher.exe").exists():
         exe = p / "launcher.exe"
     else:
-        cands = [
+        cands = [e for e in p.glob("*amelauncher.exe") if e.is_file()]
+        cands += [
             c / "launcher.exe"
             for c in p.iterdir()
             if c.is_dir() and (c / "launcher.exe").exists()
@@ -153,6 +157,7 @@ def from_path(raw: str | Path) -> Install:
             for c in p.iterdir()
             if c.is_dir()
             for e in c.glob("*amelauncher.exe")
+            if e.is_file()
         ]
         if not cands:
             raise FileNotFoundError(f"{p} 下没有 launcher.exe 或 *Gamelauncher.exe")
@@ -160,6 +165,8 @@ def from_path(raw: str | Path) -> Install:
 
     kind = "yostar" if looks_like_yostar(exe) else "manjuu"
     root = exe.parent.parent if _is_version_dir(exe.parent.name) else exe.parent
+    if p.is_dir() and exe.parent != p and not _is_version_dir(exe.parent.name):
+        root = p
     return Install(root=root, launcher_exe=exe, game_dirs=_game_dirs_in(root, kind), kind=kind)
 
 
@@ -173,6 +180,60 @@ def _install_root_of(path: Path) -> Path:
     return p
 
 
+HINTS = ("azurpromilia", "azupro", "yostar")
+
+
+def _scan_roots(base: Path) -> list[Path]:
+    """盘符根或 Program Files 下，名字像启动器安装目录的目录。"""
+    out: list[Path] = []
+    if not base.is_dir():
+        return out
+    try:
+        children = list(base.iterdir())
+    except OSError:
+        return out
+    for child in children:
+        if not child.is_dir():
+            continue
+        low = child.name.lower()
+        if low.startswith(HINTS):
+            out.append(child)
+        elif low in ("program files", "program files (x86)"):
+            try:
+                for sub in child.iterdir():
+                    if sub.is_dir() and sub.name.lower().startswith(HINTS):
+                        out.append(sub)
+            except OSError:
+                pass
+    return out
+
+
+def _manual_paths() -> list[Path]:
+    try:
+        data = json.loads(MANUAL_FILE.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = data.get("launchers") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [Path(item) for item in items if isinstance(item, str) and item.strip()]
+
+
+def add_manual(raw: str | Path) -> Install:
+    path = Path(raw).expanduser()
+    install = from_path(path)
+    resolved = str(path.resolve())
+    paths = _manual_paths()
+    if all(str(item.resolve()).lower() != resolved.lower() for item in paths):
+        paths.append(path)
+    MANUAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp = MANUAL_FILE.with_suffix(MANUAL_FILE.suffix + ".tmp")
+    temp.write_text(json.dumps({"launchers": [str(p) for p in paths]},
+                               ensure_ascii=False, indent=2), "utf-8")
+    temp.replace(MANUAL_FILE)
+    return install
+
+
 def find_installs(extra_roots: list[str] | None = None) -> list[Install]:
     roots: list[Path] = []
     for game_dir in _registry_game_dirs():
@@ -181,12 +242,8 @@ def find_installs(extra_roots: list[str] | None = None) -> list[Install]:
         base = Path(f"{drive}:/")
         if not base.exists():
             continue
-        try:
-            for child in base.iterdir():
-                if child.is_dir() and child.name.lower().startswith(("azurpromilia", "azupro")):
-                    roots.append(child)
-        except OSError:
-            continue
+        roots.extend(_scan_roots(base))
+    roots.extend(_manual_paths())
     for extra in extra_roots or []:
         roots.append(Path(extra))
 
@@ -200,7 +257,13 @@ def find_installs(extra_roots: list[str] | None = None) -> list[Install]:
         if resolved in seen:
             continue
         seen.add(resolved)
-        installs.extend(_installs_in(root))
+        if root.is_file():
+            try:
+                installs.append(from_path(root))
+            except (OSError, ValueError):
+                continue
+        else:
+            installs.extend(_installs_in(root))
 
     # 去重：同 root 只保留版本号最大的启动器
     best: dict[str, Install] = {}
@@ -209,7 +272,11 @@ def find_installs(extra_roots: list[str] | None = None) -> list[Install]:
         cur = best.get(key)
         if cur is None or _version_key(inst.version) > _version_key(cur.version):
             best[key] = inst
-    return sorted(best.values(), key=lambda i: str(i.root).lower())
+    ordered = sorted(best.values(), key=lambda i: str(i.root).lower())
+    unique: dict[str, Install] = {}
+    for inst in ordered:
+        unique.setdefault(str(inst.launcher_exe.resolve()).lower(), inst)
+    return sorted(unique.values(), key=lambda i: str(i.root).lower())
 
 
 def _version_key(text: str) -> tuple:

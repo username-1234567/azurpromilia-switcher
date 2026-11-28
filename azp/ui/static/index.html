@@ -26,6 +26,17 @@
         <button class="ghost" id="refresh">重新检测</button>
       </div>
       <div class="cards" id="cards"></div>
+      <details class="advanced">
+        <summary>启动器装在其他位置</summary>
+        <div class="form">
+          <label class="grow">
+            <span>启动器 exe 或安装目录</span>
+            <input id="launcherPath" placeholder="例如 D:\Tools\YostarGames\AZUPRO_JP_Gamelauncher">
+          </label>
+          <button class="ghost" id="addLauncher">添加并检测</button>
+        </div>
+        <p class="hint">路径仅保存在本机 out/launchers.json，下次启动仍会使用。</p>
+      </details>
     </section>
 
     <section class="panel">
@@ -139,7 +150,10 @@
     </a>
     <span class="footer-dot">·</span>
     <span>MIT License</span>
-
+    <span class="footer-dot">·</span>
+    <button class="footer-link footer-button" id="updateCheck" type="button">检查更新</button>
+    <span class="update-status" id="updateStatus" aria-live="polite"></span>
+    <a class="footer-link" id="updateLink" target="_blank" rel="noopener" hidden>下载新版</a>
   </footer>
 
   <script src="/static/app.js"></script>

@@ -25,6 +25,51 @@ function gib(n) {
   return `${(Number(n || 0) / 2 ** 30).toFixed(2)} GiB`;
 }
 
+function renderUpdate(result) {
+  const status = $("updateStatus");
+  const link = $("updateLink");
+  status.className = "update-status";
+  link.hidden = true;
+  if (result.status === "update") {
+    status.textContent = `发现新版本 ${result.latest}`;
+    status.classList.add("available");
+    link.href = result.url;
+    link.hidden = false;
+  } else if (result.status === "current") {
+    status.textContent = `已是最新 ${result.latest || result.current || ""}`;
+  } else if (result.status === "checking") {
+    status.textContent = "正在检查更新…";
+  } else if (result.status === "error") {
+    status.textContent = result.error || "检查更新失败";
+  } else {
+    status.textContent = "";
+  }
+}
+
+async function refreshUpdate(attempt = 0) {
+  try {
+    const result = await call("/api/update-status");
+    renderUpdate(result);
+    if (result.status === "checking" && attempt < 10) {
+      setTimeout(() => refreshUpdate(attempt + 1), 800);
+    }
+  } catch (err) {
+  }
+}
+
+async function checkUpdate() {
+  const button = $("updateCheck");
+  button.disabled = true;
+  renderUpdate({ status: "checking" });
+  try {
+    renderUpdate(await call("/api/update-check"));
+  } catch (err) {
+    renderUpdate({ status: "error", error: err.message });
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -36,7 +81,7 @@ function renderCards() {
   box.innerHTML = "";
   if (!state.installs.length) {
     box.innerHTML = '<p class="empty">没有找到启动器。先安装任意一个区的官方启动器，装完点「重新检测」。'
-      + '装在非标准位置时，用命令行 python -m azp check --launcher "launcher.exe 路径" 指定。</p>';
+      + '装在非标准位置时，展开下方「启动器装在其他位置」手动添加。</p>';
     return;
   }
   for (const item of state.installs) {
@@ -209,6 +254,26 @@ async function detect() {
   }
 }
 
+async function addLauncher() {
+  const input = $("launcherPath");
+  const path = input.value.trim();
+  if (!path) {
+    log("请填写启动器 exe 或安装目录。");
+    return;
+  }
+  $("addLauncher").disabled = true;
+  try {
+    const r = await call("/api/add-launcher", { path });
+    input.value = "";
+    log(`已保存启动器位置：${r.launcher}`);
+    await detect();
+  } catch (err) {
+    log(`添加启动器失败：${err.message}`);
+  } finally {
+    $("addLauncher").disabled = false;
+  }
+}
+
 function renderStats(stats) {
   const items = [
     ["硬链接", gib(stats.link_bytes), `${stats.link_files.toLocaleString()} 个文件`],
@@ -223,6 +288,23 @@ function renderStats(stats) {
       <strong>${value}</strong>
       <em>${note}</em>
     </div>`).join("");
+}
+
+function resetCalc() {
+  $("calc").disabled = false;
+  $("calc").textContent = "计算计划";
+}
+
+function showPlanError(message) {
+  $("planPanel").hidden = false;
+  $("envPanel").hidden = true;
+  $("progressBox").hidden = false;
+  $("planBadge").textContent = "计算失败";
+  $("planBadge").className = "badge fail";
+  $("jobMsg").textContent = `计算失败：${message}`;
+  $("notes").innerHTML = `<li>${escapeHtml(message)}</li>`;
+  $("run").disabled = true;
+  resetCalc();
 }
 
 function showPlan(data) {
@@ -245,8 +327,7 @@ function showPlan(data) {
   $("maintDir").value = data.target.dir;
   $("maintBadge").textContent = data.target.label;
   $("maintBadge").className = "badge ok";
-  $("calc").disabled = false;
-  $("calc").textContent = "计算计划";
+  resetCalc();
   log(`计划完成：需下载 ${gib(data.stats.download_bytes)}，新增占用 ${gib(data.need_bytes)}`);
 }
 
@@ -256,12 +337,19 @@ async function calc() {
     log("先选择一个源区和一个目标区。");
     return;
   }
+  state.lastPlan = null;
+  state.jobKind = "plan";
   $("calc").disabled = true;
   $("calc").textContent = "计算中…";
+  $("planPanel").hidden = false;
+  $("envPanel").hidden = true;
   $("progressBox").hidden = false;
+  $("planBadge").textContent = "正在获取清单";
+  $("planBadge").className = "badge";
+  $("notes").innerHTML = "";
+  $("run").disabled = true;
   $("bar").style.width = "0%";
-  $("jobMsg").textContent = "[计算计划] 读取清单并比对…";
-  state.jobKind = "plan";
+  $("jobMsg").textContent = "[获取清单] 正在查询远端版本…";
   try {
     const r = await call("/api/run", {
       action: "plan",
@@ -274,9 +362,8 @@ async function calc() {
     log("已启动计划计算。日服首次核对可能需要几分钟。");
     pollJob();
   } catch (err) {
+    showPlanError(err.message);
     log(`计算失败：${err.message}`);
-    $("calc").disabled = false;
-    $("calc").textContent = "计算计划";
   }
 }
 
@@ -377,13 +464,22 @@ async function pollJob() {
         log("执行完成。");
       }
     } else {
-      $("jobMsg").textContent = s.error || s.phase;
-      log(`任务结束：${s.error || s.status}`);
+      const message = s.error || s.message || s.phase;
+      if (state.jobKind === "plan") {
+        showPlanError(message);
+      } else {
+        $("jobMsg").textContent = message;
+      }
+      log(`任务失败：${message}`);
     }
     state.jobKind = "";
     state.jobId = "";
   } catch (err) {
-    log(`读取进度失败：${err.message}`);
+    const message = `读取任务进度失败：${err.message}`;
+    if (state.jobKind === "plan") showPlanError(message);
+    log(message);
+    state.jobId = "";
+    state.jobKind = "";
   }
 }
 
@@ -666,6 +762,8 @@ async function runMaint(action, title, warning, extra) {
 }
 
 $("refresh").addEventListener("click", detect);
+$("addLauncher").addEventListener("click", addLauncher);
+$("updateCheck").addEventListener("click", checkUpdate);
 $("calc").addEventListener("click", calc);
 $("run").addEventListener("click", runJob);
 $("cancel").addEventListener("click", cancelJob);
@@ -730,3 +828,4 @@ $("clear").addEventListener("click", () => { $("log").textContent = ""; });
 
 log("界面已就绪。计算计划是只读操作；点「开始执行」才会写入目标目录。");
 detect();
+refreshUpdate();

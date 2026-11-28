@@ -81,12 +81,22 @@ def parse_index(text: str, package_type: int) -> dict:
     return {"files": files, "dirs": dirs}
 
 
+def read_cache(target: Path) -> dict | None:
+    try:
+        data = json.loads(target.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("files"), dict) else None
+
+
+def cache_matches(cached: dict | None, cache_key: dict) -> bool:
+    return bool(cached) and cached.get("cache_key") == cache_key
+
+
 def fetch(api: Api, out_dir: Path, force: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "manifest.json"
-    if target.exists() and not force:
-        print(f"  已有清单，跳过（--force 可重抓）：{target}")
-        return json.loads(target.read_text("utf-8"))
+    cached = read_cache(target) if not force else None
 
     tag = api.ch.label or api.ch.app_id
     print(f"[{tag}] 查询版本")
@@ -127,6 +137,20 @@ def fetch(api: Api, out_dir: Path, force: bool = False) -> dict:
 
     ptype = int(pkg.get("packageType", 2))
     raw_url = (pkg.get("downloadUrl") or "").replace("\\", "/")
+    cache_key = {
+        "version_code": version_code,
+        "version_name": version_name,
+        "package_type": ptype,
+        "game_folder_name": folder,
+        "launch_entry": entry,
+        "package_url": raw_url,
+    }
+    if cache_matches(cached, cache_key):
+        print(f"  远端版本未变，复用清单：{target}")
+        return cached
+    if cached:
+        print("  远端版本或清单信息已变化，重新下载")
+
     bases = pkg.get("cdnBaseUrls") or released.get("domainList") or []
     urls = [raw_url] if raw_url.startswith("http") else [
         f"{b.rstrip('/')}/{raw_url.lstrip('/')}" for b in bases
@@ -167,6 +191,7 @@ def fetch(api: Api, out_dir: Path, force: bool = False) -> dict:
         "cdn_host": f"{parsed_url.scheme}://{parsed_url.netloc}",
         "game_folder_name": folder,
         "launch_entry": entry,
+        "cache_key": cache_key,
         "files": parsed["files"],
         "dirs": parsed["dirs"],
     }

@@ -153,13 +153,16 @@ def _run(job: Job, payload: dict) -> None:
             job.status = "error"
             job.error = str(exc)
             job.phase = "失败"
+            job.message = f"操作失败：{exc}"
             job.log(f"失败：{exc}")
             job.log(traceback.format_exc(limit=3))
 
 
 def _execute_plan(job: Job, payload: dict) -> None:
-    job.phase = "计算计划"
-    job.log("读取清单并比对；日服首次核对 CRC64 可能需要几分钟")
+    job.phase = "获取清单"
+    job.message = "正在查询远端版本并获取最新清单"
+    job.log("正在查询远端版本并获取最新清单；连接失败会显示具体原因")
+    job.log("清单就绪后比对文件；日服首次核对 CRC64 可能需要几分钟")
     result = backend.plan_preview(payload)
     job.result = {"plan": result}
     job.status = "done"

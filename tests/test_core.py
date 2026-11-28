@@ -22,10 +22,10 @@ from unittest import mock
 from azp import (
     channels, cli, crypto, detect, export, fetch, hashes, indexfile, journal,
     link, manifest, native, nofade, plan, preflight, regions, remove, repair,
-    yostar,
+    update, yostar,
 )
 from azp.api import Api
-from azp.ui import backend, channels_swap
+from azp.ui import backend, channels_swap, jobs
 
 NO_CONFIG = "_no_such_regions_.json"
 
@@ -179,6 +179,71 @@ class YostarTest(unittest.TestCase):
             yostar._vc({"a": "1", "b": "2"}),
             yostar._vc({"b": "2", "a": "1"}),
         )
+
+
+class JobFeedbackTest(unittest.TestCase):
+    def test_plan_network_failure_is_visible(self):
+        job = jobs.Job()
+        with mock.patch.object(jobs.backend, "plan_preview",
+                               side_effect=TimeoutError("清单连接超时")):
+            jobs._run(job, {"action": "plan"})
+        result = job.snapshot()
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["phase"], "失败")
+        self.assertIn("清单连接超时", result["message"])
+        self.assertIn("清单连接超时", result["error"])
+        self.assertTrue(any("失败：清单连接超时" in line for line in result["logs"]))
+
+
+class UpdateTest(unittest.TestCase):
+    def setUp(self):
+        self.old_state = update.status()
+        self.old_auto = update._auto_started
+        update._state = {"status": "idle", "current": update.__version__}
+        update._auto_started = False
+
+    def tearDown(self):
+        update._state = self.old_state
+        update._auto_started = self.old_auto
+
+    def test_version_comparison(self):
+        self.assertGreater(update._version("v0.1.10"), update._version("0.1.2"))
+        self.assertEqual(update._version("v0.1.0"), update._version("0.1.0"))
+        with self.assertRaises(ValueError):
+            update._version("not-a-version")
+
+    def test_update_available_updates_shared_status(self):
+        with mock.patch.object(update, "_latest_version", return_value="v9.2.0"):
+            result = update.check()
+        self.assertEqual(result["status"], "update")
+        self.assertEqual(result["latest"], "v9.2.0")
+        self.assertEqual(result["url"], update.RELEASE_URL)
+        self.assertEqual(update.status(), result)
+
+    def test_current_version(self):
+        with mock.patch.object(update, "_latest_version", return_value=update.__version__):
+            result = update.check(manual=True)
+        self.assertEqual(result["status"], "current")
+
+    def test_auto_failure_is_silent(self):
+        with mock.patch.object(update, "_latest_version", side_effect=OSError("offline")):
+            result = update.check(manual=False)
+        self.assertEqual(result["status"], "idle")
+        self.assertNotIn("error", result)
+        self.assertEqual(update.status()["status"], "idle")
+
+    def test_manual_failure_is_actionable(self):
+        with mock.patch.object(update, "_latest_version", side_effect=OSError("offline")):
+            result = update.check(manual=True)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("稍后重试", result["error"])
+
+    def test_auto_starts_only_once(self):
+        with mock.patch.object(update.threading, "Thread") as thread:
+            update.start_auto()
+            update.start_auto()
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once_with()
 
 
 class DetectTest(unittest.TestCase):
@@ -2101,11 +2166,20 @@ class YostarLocalTest(unittest.TestCase):
                              "https://cdn.invalid/pkg/AzurPromiliaJP_Data/a.bin")
             self.assertEqual(man["total_size"], 3)
             self.assertTrue((out / "manifest.raw.json").exists())
-            # 不 --force 时直接读已有清单，不再访问网络
-            with mock.patch.object(yostar, "game_config",
-                                   side_effect=AssertionError("不该再抓")):
+            with mock.patch.object(yostar, "game_config", return_value=cfg), \
+                 mock.patch.object(yostar, "manifest_url",
+                                   side_effect=AssertionError("版本未变，不该重抓清单")):
                 cached = yostar.fetch(out)
             self.assertEqual(cached["file_count"], 1)
+
+            updated = {**cfg, "version": "1.0.1"}
+            with mock.patch.object(yostar, "game_config", return_value=updated), \
+                 mock.patch.object(yostar, "manifest_url",
+                                   return_value="https://cdn.invalid/new.json") as url, \
+                 mock.patch("urllib.request.urlopen", return_value=resp):
+                refreshed = yostar.fetch(out)
+            self.assertEqual(refreshed["version_code"], "1.0.1")
+            url.assert_called_once_with("1.0.1", "/pkg/")
 
     def test_fetch_rejects_unknown_structure(self):
         cfg = {"version": "1", "basis": "/p/", "entry": "e", "params": [], "uninstall": "",
@@ -2188,10 +2262,20 @@ class ManifestFetchTest(unittest.TestCase):
             self.assertTrue((out / "index.raw").exists())
             self.assertTrue((out / "packageconfig.json").exists())
             get.assert_called_once()
-            # 不 --force 直接用已有清单
-            with mock.patch.object(api, "get", side_effect=AssertionError("不该再抓")):
+            with mock.patch.object(api, "get", return_value=self._config()), \
+                 mock.patch.object(manifest, "http_get_bytes",
+                                   side_effect=AssertionError("版本未变，不该重复下载")):
                 cached = manifest.fetch(api, out)
             self.assertEqual(cached["file_count"], 1)
+
+            updated = self._config()
+            updated["data"]["released"]["versionCode"] = "101"
+            with mock.patch.object(api, "get", return_value=updated), \
+                 mock.patch.object(manifest, "http_get_bytes",
+                                   return_value=text.encode()) as get:
+                refreshed = manifest.fetch(api, out)
+            self.assertEqual(refreshed["version_code"], "101")
+            get.assert_called_once()
 
     def test_fetch_encrypted_index(self):
         api = self._api()
@@ -2231,6 +2315,53 @@ class ManifestFetchTest(unittest.TestCase):
 
 
 class DetectMoreTest(unittest.TestCase):
+    def test_yostar_under_program_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Program Files" / "YostarGames"
+            launcher = base / "AZUPRO_JP_Gamelauncher" / "AZUPRO_JP_Gamelauncher.exe"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_bytes(b"")
+
+            roots = detect._scan_roots(Path(tmp))
+            self.assertIn(base, roots)
+            installs = detect._installs_in(base)
+            self.assertTrue(installs)
+            self.assertEqual(installs[0].root, base)
+            self.assertEqual(installs[0].launcher_exe, launcher)
+            self.assertEqual(installs[0].kind, "yostar")
+            self.assertIsNone(installs[0].game_dir)
+
+            manual = detect.from_path(launcher.parent)
+            self.assertEqual(manual.root, launcher.parent)
+            self.assertEqual(manual.launcher_exe, launcher)
+            manual = detect.from_path(base)
+            self.assertEqual(manual.root, base)
+            self.assertEqual(manual.launcher_exe, launcher)
+
+            game = base / "AZUPRO_JP"
+            (game / "AzurPromiliaJP_Data").mkdir(parents=True)
+            installs = detect._installs_in(base)
+            self.assertEqual(installs[0].game_dir, game)
+            self.assertEqual(detect.from_path(base).game_dir, game)
+
+    def test_manual_launcher_persists_for_find_installs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "自定义位置" / "YostarGames"
+            launcher = root / "AZUPRO_JP_Gamelauncher" / "AZUPRO_JP_Gamelauncher.exe"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_bytes(b"")
+            config = Path(tmp) / "state" / "launchers.json"
+            with mock.patch.object(detect, "MANUAL_FILE", config), \
+                 mock.patch.object(detect, "_registry_game_dirs", return_value=[]), \
+                 mock.patch.object(detect.string, "ascii_uppercase", ""):
+                added = detect.add_manual(launcher)
+                self.assertEqual(added.launcher_exe, launcher)
+                self.assertTrue(config.is_file())
+                installs = detect.find_installs()
+            self.assertEqual(len(installs), 1)
+            self.assertEqual(installs[0].launcher_exe, launcher)
+            self.assertEqual(installs[0].kind, "yostar")
+
     def test_version_key_ordering(self):
         self.assertEqual(detect._version_key("1.2.3"), (1, 2, 3))
         self.assertEqual(detect._version_key(""), (0,))

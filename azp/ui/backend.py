@@ -90,8 +90,7 @@ def _api_for(key: str) -> Api | None:
 
 def _manifest_for(key: str, out: Path, force: bool) -> tuple[dict, list[str]]:
     path = out / key / "manifest.json"
-    if path.exists() and not force:
-        return json.loads(path.read_text("utf-8")), [f"复用已有清单：{path}"]
+
     if key == "jp":
         has_launcher = any(inst.kind == "yostar" for inst in detect.find_installs())
         if not has_launcher and not os.environ.get("AZP_YOSTAR_SALT"):
@@ -102,7 +101,7 @@ def _manifest_for(key: str, out: Path, force: bool) -> tuple[dict, list[str]]:
         if api is None:
             raise ValueError(f"没找到 {key} 的启动器，无法抓清单")
         data = manifest.fetch(api, out / key, force=force)
-    return data, [f"已抓取清单：{path}"]
+    return data, [f"清单版本已核对：{path}"]
 
 
 INSTALLER_PATTERNS = (
@@ -158,6 +157,14 @@ def _variants_for(key: str) -> list[dict]:
         {"key": "cn", "label": "官服"},
         {"key": "bili", "label": "哔哩哔哩服"},
     ]
+
+
+def add_launcher(payload: dict) -> dict:
+    raw = str(payload.get("path") or "").strip()
+    if not raw:
+        raise ValueError("请填写启动器 exe 或安装目录")
+    install = detect.add_manual(raw)
+    return {"root": str(install.root), "launcher": str(install.launcher_exe)}
 
 
 def detect_all(payload: dict | None = None) -> dict:
