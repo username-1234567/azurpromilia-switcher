@@ -11,25 +11,36 @@ from .journal import Entry
 
 
 class LinkStats:
-    def __init__(self) -> None:
+    def __init__(self, on_change=None) -> None:
         self.created = 0
         self.skipped = 0
         self.failed: list[tuple[str, str]] = []
         self.bytes = 0
         self._lock = threading.Lock()
+        self.on_change = on_change
+
+    def _notify(self) -> None:
+        if self.on_change is not None:
+            try:
+                self.on_change(self)
+            except Exception:  # noqa: BLE001
+                pass
 
     def add_created(self, size: int) -> None:
         with self._lock:
             self.created += 1
             self.bytes += size
+        self._notify()
 
     def add_skipped(self) -> None:
         with self._lock:
             self.skipped += 1
+        self._notify()
 
     def add_failed(self, path: str, msg: str) -> None:
         with self._lock:
             self.failed.append((path, msg))
+        self._notify()
 
 
 def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool,
@@ -64,7 +75,7 @@ def _link_one(src: Path, dst: Path, size: int, stats: LinkStats, dry: bool,
 
 def run(rows: list[dict], base_dir: Path, target_dir: Path,
         local_dir: Path | None = None, workers: int = 8, dry: bool = False,
-        journal: Entry | None = None) -> LinkStats:
+        journal: Entry | None = None, on_change=None) -> LinkStats:
     jobs: list[tuple[Path, Path, int]] = []
     for row in rows:
         if row["action"] == "link":
@@ -75,7 +86,7 @@ def run(rows: list[dict], base_dir: Path, target_dir: Path,
             continue
         jobs.append((src, target_dir / row["path"], row["size"]))
 
-    stats = LinkStats()
+    stats = LinkStats(on_change)
     if not jobs:
         print("  没有需要建立链接的文件")
         return stats

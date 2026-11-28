@@ -1,6 +1,6 @@
 """区服表：把启动器里的 (appId, channelCode) 映射成短代号。
 
-内置国服、哔哩哔哩服、国际服；其他渠道（同一套 Manjuu/Jimi 启动器的）可以在仓库根的
+内置国服、哔哩哔哩服、台服；其他渠道（同一套 Manjuu/Jimi 启动器的）可以在仓库根的
 `regions.json` 里补 appId、渠道号和接口域名，不用改代码：
 
     {"regions": {"xx": {"label": "…", "app_id": "…", "channel_codes": ["…"],
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class Region:
     source: str = "内置"
     note: str = ""
     kind: str = "manjuu"
+    homepage: str = ""
 
     @property
     def ready(self) -> bool:
@@ -46,9 +48,11 @@ class Region:
 
 
 BUILTIN: tuple[Region, ...] = (
-    Region("cn", "国服", "354", ("C000",), MANJUU, "zh-Hans", "AzurPromilia_Game"),
+    Region("cn", "国服", "354", ("C000",), MANJUU, "zh-Hans", "AzurPromilia_Game",
+           homepage="https://azurpromilia.manjuu.com/"),
     Region("bili", "哔哩哔哩服", "354", ("C001",), MANJUU, "zh-Hans", "AzurPromilia_Game"),
-    Region("global", "国际服", "434", ("C500",), JIMI, "en", "AzurPromilia_TC_game"),
+    Region("global", "台服", "434", ("C500",), JIMI, "en", "AzurPromilia_TC_game",
+           homepage="https://azurpromilia.jimi-global.com/home/"),
     Region(
         "jp",
         "日服",
@@ -58,6 +62,7 @@ BUILTIN: tuple[Region, ...] = (
         "ja",
         "AZUPRO_JP",
         kind="yostar",
+        homepage="https://azurpromilia.jp/",
     ),
 )
 
@@ -66,10 +71,16 @@ def config_path() -> Path:
     env = os.environ.get(CONFIG_ENV)
     if env:
         return Path(env)
-    beside = Path(__file__).resolve().parent.parent / CONFIG_NAME
-    if beside.exists():
-        return beside
-    return Path.cwd() / CONFIG_NAME
+    candidates = []
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包后 __file__ 在临时解压目录，优先读 exe 旁边的配置
+        candidates.append(Path(sys.executable).resolve().parent / CONFIG_NAME)
+    candidates.append(Path(__file__).resolve().parent.parent / CONFIG_NAME)
+    candidates.append(Path.cwd() / CONFIG_NAME)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
 def load(path: Path | str | None = None) -> list[Region]:
@@ -99,6 +110,7 @@ def load(path: Path | str | None = None) -> list[Region]:
             folder=str(raw.get("folder") or base.folder),
             source=str(p),
             kind=str(raw.get("kind") or base.kind),
+            homepage=str(raw.get("homepage") or base.homepage),
         )
         table[key] = entry
     return list(table.values())

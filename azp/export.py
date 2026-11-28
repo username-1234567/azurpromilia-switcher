@@ -2,7 +2,7 @@
 
 两种用法：
 - 按计划只导 download 动作的文件，接收方放进目标目录后 `azp fetch` 会跳过；
-- `--full` 整客户端搬家（含启动器索引：国服/国际服 `_index`，日服 `manifest.json`），
+- `--full` 整客户端搬家（含启动器索引：国服/台服 `_index`，日服 `manifest.json`），
   给一台什么都没有的机器用，省掉 95 GiB 下载。
 """
 

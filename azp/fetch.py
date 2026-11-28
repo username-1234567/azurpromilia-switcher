@@ -17,7 +17,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) azp/0.1"
 
 
 class Stats:
-    def __init__(self, total_files: int, total_bytes: int):
+    def __init__(self, total_files: int, total_bytes: int, on_change=None):
         self.lock = threading.Lock()
         self.total_files = total_files
         self.total_bytes = total_bytes
@@ -25,6 +25,7 @@ class Stats:
         self.done_bytes = 0
         self.failed: list[tuple[str, str]] = []
         self.started = time.time()
+        self.on_change = on_change
 
     def add(self, size: int, ok: bool, path: str, msg: str = "") -> None:
         with self.lock:
@@ -33,6 +34,11 @@ class Stats:
                 self.done_bytes += size
             else:
                 self.failed.append((path, msg))
+        if self.on_change is not None:
+            try:
+                self.on_change(self)
+            except Exception:  # noqa: BLE001
+                pass
 
     def report(self) -> str:
         with self.lock:
@@ -184,11 +190,12 @@ def download_one(pool: Connections, url: str, dest: Path, size: int, expect: str
 
 
 def run(rows: list[dict], target: Path, workers: int = 16,
-        journal: Entry | None = None, kind: str | None = None) -> Stats:
+        journal: Entry | None = None, kind: str | None = None,
+        on_change=None) -> Stats:
     pending = [r for r in rows if r["action"] == "download"]
     if kind is None:
         kind = pending[0]["hash_kind"] if pending else hashes.MD5
-    stats = Stats(len(pending), sum(r["size"] for r in pending))
+    stats = Stats(len(pending), sum(r["size"] for r in pending), on_change=on_change)
     if not pending:
         print("  没有需要下载的文件")
         return stats

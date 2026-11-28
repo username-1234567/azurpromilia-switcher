@@ -434,7 +434,7 @@ def cmd_finalize(args) -> int:
         print("  打开日服启动器，应当直接认出已安装，不用重下")
         return 0
     if not args.index_csv:
-        print("国服/国际服要 --index-csv（清单解出来的 index.csv）")
+        print("国服/台服要 --index-csv（清单解出来的 index.csv）")
         return 1
     folder = data.get("game_folder_name")
     if folder and target.name != folder:
@@ -558,9 +558,16 @@ def cmd_rollback(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    """启动本地图形界面，复用 CLI 的检测与计划逻辑。"""
+    from .ui.server import serve
+
+    return serve(out=args.out, port=args.port, open_browser=not args.no_browser)
+
+
 def cmd_quickstart(args) -> int:
     """交互式向导：一条命令走完全流程。"""
-    print("蓝色星原：旅谣 国服 / 国际服 / 日服切换")
+    print("蓝色星原：旅谣 国服 / 台服 / 日服切换")
     print("需要：至少一个区已装好当源；目标区可以是空目录，也可以已装好客户端")
     print("      目标区已有的同大小文件不重新下载，只补差异")
     out = Path(args.out)
@@ -602,7 +609,7 @@ def cmd_quickstart(args) -> int:
         entries.append((inst, ch))
 
     if not entries:
-        print("没有可用的国服/国际服启动器。日服不能单独加另一个区，先把目标区启动器装上。")
+        print("没有可用的国服/台服启动器。日服不能单独加另一个区，先把目标区启动器装上。")
         return 1
 
     ready = [(inst, ch) for inst, ch in entries if inst.game_dirs]
@@ -961,7 +968,7 @@ def cmd_verify(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="azp", description="蓝色星原 国服/国际服/日服客户端切换工具")
+    p = argparse.ArgumentParser(prog="azp", description="蓝色星原 国服/台服/日服客户端切换工具")
     p.add_argument("--version", action="version", version=f"azp {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -1010,6 +1017,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--yes", action="store_true", help="不再确认，直接开始")
     q.add_argument("--dry-run", action="store_true", help="只算计划和环境检查，不写文件")
     q.set_defaults(func=cmd_quickstart)
+
+    gu = sub.add_parser("gui", help="启动图形界面（本地网页窗口）")
+    gu.add_argument("--out", default=str(DEFAULT_OUT))
+    gu.add_argument("--port", type=int, default=0, help="监听端口，默认随机")
+    gu.add_argument("--no-browser", action="store_true", help="只启动服务，不自动打开浏览器")
+    gu.set_defaults(func=cmd_gui)
 
     m = sub.add_parser("manifests", help="抓取各区逐文件清单")
     m.add_argument("--out", default=str(DEFAULT_OUT))

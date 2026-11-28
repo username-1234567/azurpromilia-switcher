@@ -25,6 +25,7 @@ from azp import (
     yostar,
 )
 from azp.api import Api
+from azp.ui import backend, channels_swap
 
 NO_CONFIG = "_no_such_regions_.json"
 
@@ -140,7 +141,7 @@ class CrossKindPlanTest(unittest.TestCase):
                 }},
             }
             target = {
-                "label": "国际服",
+                "label": "台服",
                 "hash_kind": "md5",
                 "cdn_host": "https://example.invalid",
                 "files": {"AzurPromilia_Data/a.bin": {
@@ -350,7 +351,19 @@ class NofadeTest(unittest.TestCase):
             self.assertEqual(nofade.state(game), "patched")
             self._place(game, b"\x07" * 64)
             self.assertEqual(nofade.state(game), "unknown")
-            self.assertEqual(nofade.state(root / "not-a-client"), "unknown")
+            self.assertEqual(nofade.state(root / "not-a-client"), "unsupported")
+
+    def test_rejects_non_cn_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "AzurPromilia_TC_game"
+            (game / "AzurPromilia_Data").mkdir(parents=True)
+            self.assertEqual(nofade.state(game), "unsupported")
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(nofade.NofadeError) as ctx:
+                    nofade.install(game, accept_risk=True, yes=True)
+            self.assertIn("只支持国服", str(ctx.exception))
+            self.assertFalse((game / nofade.BACKUP_NAME).exists())
 
     def test_install_already_patched(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1579,11 +1592,11 @@ class QuickstartTest(unittest.TestCase):
         ]
         chs = {
             "cn": channels.Channel("354", "C000", "l1", "g1", secret="s", label="国服"),
-            "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="国际服"),
+            "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="台服"),
         }
 
         def fake_load(exe):
-            return chs["cn"] if "cn" in str(exe) else chs["global"]
+            return chs["cn"] if "cn" in {p.name for p in Path(exe).parents} else chs["global"]
 
         def fake_fetch(api, out_dir, force=False):
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -1713,11 +1726,11 @@ class QuickstartTest(unittest.TestCase):
             ]
             chs = {
                 "cn": channels.Channel("354", "C000", "l1", "g1", secret="s", label="国服"),
-                "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="国际服"),
+                "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="台服"),
             }
 
             def fake_load(exe):
-                return chs["cn"] if "cn" in str(exe) else chs["global"]
+                return chs["cn"] if "cn" in {p.name for p in Path(exe).parents} else chs["global"]
 
             def fake_fetch(api, out_dir, force=False):
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1761,11 +1774,11 @@ class QuickstartTest(unittest.TestCase):
             ]
             chs = {
                 "cn": channels.Channel("354", "C000", "l1", "g1", secret="s", label="国服"),
-                "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="国际服"),
+                "global": channels.Channel("434", "C500", "l2", "g2", secret="s", label="台服"),
             }
 
             def fake_load(exe):
-                return chs["cn"] if "cn" in str(exe) else chs["global"]
+                return chs["cn"] if "cn" in {p.name for p in Path(exe).parents} else chs["global"]
 
             def fake_fetch(api, out_dir, force=False):
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1808,7 +1821,7 @@ class QuickstartTest(unittest.TestCase):
             with mock.patch("builtins.input", side_effect=["", ""]):
                 code, log2, target2 = self._run(root, ["--yes"], interactive=True)
             self.assertEqual(code, 0, log2)
-            self.assertIn("上次：国服 → 国际服", log2)
+            self.assertIn("上次：国服 → 台服", log2)
             self.assertEqual(target2, target_dir)
 
 
@@ -1822,7 +1835,7 @@ class NofadeNoticeTest(unittest.TestCase):
                             resource_version="1")
 
     def _client(self, root: Path, content: bytes) -> Path:
-        game = root / "game"
+        game = root / "AzurPromilia_Game"
         dest = game / "AzurPromilia_Data" / Path(self.REL)
         dest.parent.mkdir(parents=True)
         dest.write_bytes(content)
@@ -1859,6 +1872,123 @@ class NofadeNoticeTest(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()) as out:
                 cli._nofade_notice(base, root / "target", False, False, False, False)
             self.assertIn("硬链接会把这个文件带到目标区", out.getvalue())
+
+
+class ChannelSwapTest(unittest.TestCase):
+    def _client(self, root: Path, bilibili: bool) -> Path:
+        game = root / "AzurPromilia_Game"
+        sdk = game / "AzurPromilia_Data" / "Plugins" / "mj_sdk"
+        sdk.mkdir(parents=True)
+        (game / "mj_sdk" / "res").mkdir(parents=True)
+        (game / "mj_sdk" / "res" / "app_config.dat").write_bytes(b"cfg")
+        if bilibili:
+            (sdk / "BLPlatform64").mkdir()
+        return game
+
+    def test_current_detects_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(channels_swap.current(self._client(root / "a", False)), "official")
+            self.assertEqual(channels_swap.current(self._client(root / "b", True)), "bilibili")
+
+    def test_switch_requires_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = self._client(root / "game", False)
+            with mock.patch.object(channels_swap.preflight, "running_games", return_value=[]):
+                with self.assertRaises(channels_swap.ChannelError):
+                    channels_swap.switch(game, "official", "bilibili",
+                                         source_dir=root / "src", backup_dir=root / "bak")
+
+    def test_extract_and_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            official = self._client(root / "official", False)
+            bili = self._client(root / "bili", True)
+            src = root / "src"
+            bak = root / "bak"
+            channels_swap.extract(official, "official", source_dir=src)
+            channels_swap.extract(bili, "bilibili", source_dir=src)
+            with mock.patch.object(channels_swap.preflight, "running_games", return_value=[]):
+                channels_swap.switch(official, "official", "bilibili",
+                                     source_dir=src, backup_dir=bak)
+            self.assertEqual(channels_swap.current(official), "bilibili")
+            self.assertTrue((bak / "official").is_dir())
+
+
+class InstallerScanTest(unittest.TestCase):
+    def test_maps_installer_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "AzurPromilia_manjuu_installer_1.0.1.1_35_SC000.exe").write_bytes(b"x")
+            (root / "AzurPromilia_jimi_installer.exe").write_bytes(b"x")
+            (root / "AzurPromilia_yostar_installer.exe").write_bytes(b"x")
+            found = backend._scan_installers([root], min_bytes=0)
+        self.assertIn("cn", found)
+        self.assertIn("global", found)
+        self.assertIn("jp", found)
+        self.assertTrue(found["cn"].endswith("AzurPromilia_manjuu_installer_1.0.1.1_35_SC000.exe"))
+
+    def test_small_files_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "AzurPromilia_manjuu_installer.exe").write_bytes(b"x")
+            found = backend._scan_installers([root], min_bytes=1024)
+        self.assertEqual(found, {})
+
+
+class RegionsInfoTest(unittest.TestCase):
+    def test_returns_builtin_regions(self):
+        data = backend.regions_info({})
+        keys = {r["key"] for r in data["regions"]}
+        for key in ("cn", "bili", "global", "jp"):
+            self.assertIn(key, keys)
+        for item in data["regions"]:
+            self.assertIn("label", item)
+            self.assertIn("folder", item)
+            self.assertIn("ready", item)
+
+    def test_cn_has_bili_variant(self):
+        with mock.patch.object(backend.detect, "find_installs", return_value=[]):
+            data = backend.detect_all({})
+        keys = {r["key"] for r in data["installs"]}
+        self.assertIn("cn", keys)
+        self.assertNotIn("bili", keys)
+        cn = next(r for r in data["installs"] if r["key"] == "cn")
+        variant_keys = [v["key"] for v in cn["variants"]]
+        self.assertIn("bili", variant_keys)
+
+
+class JournalListTest(unittest.TestCase):
+    def test_lists_entries_for_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "AzurPromilia_Game"
+            target.mkdir()
+            jdir = root / "journal"
+            jdir.mkdir()
+            entry = {
+                "cmd": "quickstart",
+                "target": str(target.absolute()),
+                "time": 1,
+                "created": [{"path": str(target / "a.bin"), "size": 3}],
+                "backups": [{"orig": str(target / "b.bin"), "saved": str(root / "b.bin")}],
+            }
+            (jdir / "20260101-000000-quickstart.json").write_text(
+                json.dumps(entry), "utf-8")
+            with mock.patch.object(journal, "JOURNAL_DIR", jdir):
+                data = backend.journal_list({"target": str(target)})
+            self.assertEqual(len(data["entries"]), 1)
+            item = data["entries"][0]
+            self.assertEqual(item["cmd"], "quickstart")
+            self.assertEqual(item["created_files"], 1)
+            self.assertEqual(item["created_bytes"], 3)
+            self.assertEqual(item["backup_files"], 1)
+
+    def test_missing_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = backend.journal_list({"target": str(Path(tmp) / "nope")})
+        self.assertEqual(data["entries"], [])
 
 
 class VerifyDirIgnoreTest(unittest.TestCase):
@@ -2553,12 +2683,15 @@ class NativeFindTest(unittest.TestCase):
             tool.write_bytes(b"")
             inst = detect.Install(root=root, launcher_exe=root / "1.0.0" / "launcher.exe")
             with mock.patch.dict(os.environ, {"AZP_7ZA": ""}), \
+                 mock.patch.object(native, "bundled_7za", return_value=root / "nope.exe"), \
                  mock.patch.object(native.shutil, "which", return_value=None), \
                  mock.patch.object(detect, "find_installs", return_value=[inst]):
                 self.assertEqual(native.find(), tool)
 
     def test_find_returns_none_when_nothing_exists(self):
         with mock.patch.dict(os.environ, {"AZP_7ZA": ""}), \
+             mock.patch.object(native, "bundled_7za",
+                               return_value=Path("_no_such_7za_.exe")), \
              mock.patch.object(native.shutil, "which", return_value=None), \
              mock.patch.object(detect, "find_installs", return_value=[]):
             self.assertIsNone(native.find())
@@ -2643,7 +2776,7 @@ class NofadeRelinkTest(unittest.TestCase):
     def test_relink_from_base(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            base = root / "base"
+            base = root / "AzurPromilia_Game"
             src = base / "AzurPromilia_Data" / "sub" / "test.r"
             src.parent.mkdir(parents=True)
             src.write_bytes(b"abc")
@@ -2658,7 +2791,7 @@ class NofadeRelinkTest(unittest.TestCase):
     def test_relink_refuses_wrong_base_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            base = root / "base"
+            base = root / "AzurPromilia_Game"
             src = base / "AzurPromilia_Data" / "sub" / "test.r"
             src.parent.mkdir(parents=True)
             src.write_bytes(b"different")  # 不是原版就不能拿它恢复
@@ -2955,9 +3088,16 @@ class RegressionGuardTest(unittest.TestCase):
             base = root / "base"
             base.mkdir()
             target = root / "target"
-            with mock.patch.object(preflight, "hardlink_works") as probe:
+            target.mkdir()
+            before = set(target.iterdir())
+            with mock.patch.object(
+                preflight, "hardlink_probe_same_volume",
+                return_value=(True, "卷支持硬链接（执行时确认目标目录权限）"),
+            ) as volume_probe:
                 preflight.run(base, target, probe_links=False)
-            probe.assert_not_called()
+            # 计划阶段不写目标目录，只在同卷临时目录做卷级预检
+            volume_probe.assert_called_once()
+            self.assertEqual(set(target.iterdir()), before)
 
     def test_zero_byte_file_downloads(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3082,10 +3222,10 @@ class RegressionGuardTest(unittest.TestCase):
                 launcher_exe=root / "global" / "1.0.0" / "launcher.exe")
             ch = channels.Channel("354", "C000", "l1", "g1", secret="s", label="国服")
             global_ch = channels.Channel("434", "C500", "l2", "g2", secret="s",
-                                         label="国际服")
+                                         label="台服")
 
             def fake_load(exe):
-                return ch if "cn" in str(exe) else global_ch
+                return ch if "cn" in {p.name for p in Path(exe).parents} else global_ch
 
             def fake_fetch(api, out_dir, force=False):
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -3149,10 +3289,10 @@ class RegressionGuardTest(unittest.TestCase):
                 launcher_exe=root / "global" / "1.0.0" / "launcher.exe")
             ch = channels.Channel("354", "C000", "l1", "g1", secret="s", label="国服")
             global_ch = channels.Channel("434", "C500", "l2", "g2", secret="s",
-                                         label="国际服")
+                                         label="台服")
 
             def fake_load(exe):
-                return ch if "cn" in str(exe) else global_ch
+                return ch if "cn" in {p.name for p in Path(exe).parents} else global_ch
 
             def fake_fetch(api, out_dir, force=False):
                 out_dir.mkdir(parents=True, exist_ok=True)

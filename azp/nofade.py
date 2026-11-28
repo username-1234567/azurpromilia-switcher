@@ -64,7 +64,24 @@ def load() -> Patch:
     )
 
 
+CN_FOLDER = "AzurPromilia_Game"
+
+
+def game_name(target: Path) -> str:
+    """目标游戏目录名；传 AzurPromilia_Data 时取它的父目录名。"""
+    return target.parent.name if target.name == "AzurPromilia_Data" else target.name
+
+
+def is_cn(target: Path) -> bool:
+    """补丁只适用于国服客户端（AzurPromilia_Game），台服/日服资源不同，不能套用。"""
+    return game_name(target) == CN_FOLDER
+
+
 def _data_dir(target: Path) -> Path:
+    if not is_cn(target):
+        raise NofadeError(
+            f"反虚化只支持国服（目录名 {CN_FOLDER}），当前是 {game_name(target)}"
+        )
     if (target / "AzurPromilia_Data").is_dir():
         return target / "AzurPromilia_Data"
     if target.name == "AzurPromilia_Data" and target.is_dir():
@@ -127,11 +144,13 @@ def _relink(dest: Path, base: Path | None, patch: Patch) -> bool:
 
 
 def state(target: Path) -> str:
-    """只读判断补丁文件状态：patched / original / missing / unknown。
+    """只读判断补丁文件状态：patched / original / missing / unsupported / unknown。
 
     quickstart 用它决定是否提示「硬链接会带走补丁」或「复核会覆盖补丁」；
-    补丁元数据缺失、目录不像客户端时一律 unknown，不因此中断主流程。
+    非国服目录返回 unsupported，补丁元数据缺失时返回 unknown，都不中断主流程。
     """
+    if not is_cn(target):
+        return "unsupported"
     try:
         patch = load()
         dest = _data_dir(target) / Path(patch.file)

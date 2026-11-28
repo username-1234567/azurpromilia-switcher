@@ -80,6 +80,23 @@ def hardlink_works(directory: Path) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def hardlink_probe_same_volume(target: Path) -> tuple[bool | None, str]:
+    """计划阶段用系统临时目录预检目标所在卷的硬链接能力。
+
+    只有临时目录与目标同卷时结果才有效；不同卷返回 None，交给执行阶段实测。
+    这样既不写目标目录，也能给出卷级结论。
+    """
+    temp_root = Path(tempfile.gettempdir())
+    _target_fs, target_serial = volume_info(target)
+    _temp_fs, temp_serial = volume_info(temp_root)
+    if not target_serial or not temp_serial or target_serial != temp_serial:
+        return None, "临时目录与目标不同卷，无法预检"
+    ok, why = hardlink_works(temp_root)
+    if ok:
+        return True, "卷支持硬链接（执行时确认目标目录权限）"
+    return False, f"卷不支持硬链接：{why}"
+
+
 def long_paths_enabled() -> bool | None:
     """注册表里的 LongPathsEnabled，读不到返回 None。"""
     if os.name != "nt":
@@ -132,10 +149,16 @@ def _path_items(label: str, path: Path, need_bytes: int = 0,
     if probe_links:
         ok, why = hardlink_works(path)
         items.append(Item(f"{label}硬链接", OK if ok else FAIL, why or "可创建"))
+    elif label == "源目录":
+        items.append(Item(f"{label}硬链接", OK, "不在源区实测，由目标卷探测判断"))
     else:
-        status = OK if label == "源目录" else WARN
-        detail = "不在源区实测，由目标卷探测判断" if label == "源目录" else "未实测（避免写入该目录）"
-        items.append(Item(f"{label}硬链接", status, detail))
+        volume_ok, detail = hardlink_probe_same_volume(path)
+        if volume_ok is True:
+            items.append(Item(f"{label}硬链接", OK, detail))
+        elif volume_ok is False:
+            items.append(Item(f"{label}硬链接", FAIL, detail))
+        else:
+            items.append(Item(f"{label}硬链接", WARN, "需执行时在目标卷实测"))
 
     if exists:
         probe = path

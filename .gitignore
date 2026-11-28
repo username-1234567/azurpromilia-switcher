@@ -6,6 +6,7 @@ venv/
 out/
 build/
 dist/
+*.spec
 *.csv
 *.jsonl
 regions.json

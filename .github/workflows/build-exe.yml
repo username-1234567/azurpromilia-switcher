@@ -1,0 +1,63 @@
+name: build-exe
+
+"on":
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pyinstaller==6.22.3" "pycryptodome==4.4.0"
+
+      - name: Build one-file exe
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --console --name azp `
+            --add-data "azp/patches;azp/patches" `
+            --add-data "azp/ui/static;azp/ui/static" `
+            --add-data "azp/tools;azp/tools" `
+            --hidden-import Crypto.Cipher.AES `
+            --hidden-import Crypto.Util.Padding `
+            --hidden-import azp.ui.server `
+            --hidden-import azp.ui.backend `
+            --hidden-import azp.ui.jobs `
+            --hidden-import azp.ui.channels_swap `
+            run.py
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ".\dist\azp.exe")) { throw "dist\azp.exe 未生成" }
+          .\dist\azp.exe --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azp-exe
+          path: dist/azp.exe
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/azp.exe

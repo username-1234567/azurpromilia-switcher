@@ -26,7 +26,7 @@ _LOOKED = False
 
 
 def find() -> Path | None:
-    """环境变量 → PATH → 启动器目录，按这个顺序找。找到一次就记住。"""
+    """环境变量 → 内置 7za → PATH → 启动器目录，按这个顺序找。找到一次就记住。"""
     global _CACHED, _LOOKED
     if _LOOKED:
         return _CACHED
@@ -35,12 +35,22 @@ def find() -> Path | None:
     return _CACHED
 
 
+def bundled_7za() -> Path:
+    """随程序附带的 7za 路径；源码模式与 PyInstaller 解压目录都适用。"""
+    return Path(__file__).resolve().parent / "tools" / "7za.exe"
+
+
 def _find() -> Path | None:
     env = os.environ.get("AZP_7ZA")
     if env:
         candidate = Path(env)
         if candidate.exists():
             return candidate
+    # 随程序附带的 7za：源码模式是 azp/tools/7za.exe，
+    # PyInstaller 打包后是 _MEIPASS/azp/tools/7za.exe
+    bundled = bundled_7za()
+    if bundled.is_file():
+        return bundled
     for name in NAMES:
         hit = shutil.which(name)
         if hit:

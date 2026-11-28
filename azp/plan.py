@@ -38,7 +38,7 @@ def path_mapper(target: dict, base: dict | None = None):
     """目录名换算规则：把目标区的路径换成基区里的路径。
 
     `path_map` 记的是「自己 → 另一套名字」。所以目标区那份直接可用；基区那份要反过来用，
-    否则拿日服当源区、国际服当目标时，一条都对不上（日服在 `AzurPromiliaJP_Data` 下）。
+    否则拿日服当源区、台服当目标时，一条都对不上（日服在 `AzurPromiliaJP_Data` 下）。
     """
     rules: list[tuple[str, str]] = []
 

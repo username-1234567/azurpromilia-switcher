@@ -22,12 +22,12 @@ python -m azp regions                        # cn/bili/global/jp 四个区均应
 ## 1. 开工前确认项
 
 1. **源区**：已完整安装、可正常进入游戏的客户端目录，例如 `C:/AzurPromilia/AzurPromilia_Game`。
-2. **目标区位置**：国服或国际服填只装了启动器的一侧安装根，例如 `C:/AzurPromiliaGlobal`；日服无需预装客户端，但需已安装日服启动器（用于读取签名盐），目标为以 `AZUPRO_JP` 结尾的空目录。
-3. **目标目录名**：由启动器的 `gameFolderName` 决定，国际服为 `AzurPromilia_TC_game`，日服为 `AZUPRO_JP`，不可自定义。
+2. **目标区位置**：国服或台服填只装了启动器的一侧安装根，例如 `C:/AzurPromiliaGlobal`；日服无需预装客户端，但需已安装日服启动器（用于读取签名盐），目标为以 `AZUPRO_JP` 结尾的空目录。
+3. **目标目录名**：由启动器的 `gameFolderName` 决定，台服为 `AzurPromilia_TC_game`，日服为 `AZUPRO_JP`，不可自定义。
 
 `python -m azp detect` 的输出可提供前两项及区服代号（cn / bili / global / jp），应先执行再提问，以减少不必要的交互。
 
-日服（`jp`）可直接使用，但与国服、国际服的命令存在以下差异，不可直接套用：
+日服（`jp`）可直接使用，但与国服、台服的命令存在以下差异，不可直接套用：
 
 - 目标目录名必须为 `AZUPRO_JP`，游戏文件直接位于该层。
 - `plan` 必须加 `--base-dir "%BASE%"`。两区校验方式不同（MD5 / CRC64），需用 7za 实际计算同名同大小文件的校验值，耗时约两分钟。缺少 7za 时会中止，此时应安装 7-Zip，或在用户明确同意后加 `--trust-names`。
@@ -130,7 +130,7 @@ set "TGT=C:\AzurPromiliaGlobal\AzurPromilia_TC_game"
 
 执行第 4 步（`link`）前，须按第 3 节 A 报告数字、询问备份并等待回答。这是正常流程中唯一需要中断等待的环节。
 
-上表以国服 → 国际服为例。更换区服只需替换代号，其余不变：`--base cn` / `--target bili`、计划表 `out/plan_cn_to_bili.csv`、清单 `out/bili/manifest.json`。
+上表以国服 → 台服为例。更换区服只需替换代号，其余不变：`--base cn` / `--target bili`、计划表 `out/plan_cn_to_bili.csv`、清单 `out/bili/manifest.json`。
 
 目标为日服时需两处调整：`plan` 加 `--base-dir "%BASE%"`，`finalize` 去掉 `--index-csv`。
 
